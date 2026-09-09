@@ -1,5 +1,7 @@
 # SAP 签名服务
 
+> **AI 构建声明**：本项目由 AI 全程构建，包括代码、测试、文档和发布流程。使用前请自行审查代码并在目标环境中验证。
+
 将父级目录 `ipatool/internal/sap` 的跨平台签名器包装成 HTTP 服务，在 Linux
 Docker 中运行。支持已购接口 `/update` 的表单、`/databases/{revision}/items`
 的 DMAP、XML plist 和其他原始字节，返回可直接用于 `X-Apple-ActionSignature`
@@ -109,6 +111,23 @@ docker compose down
 `down` 保留资源缓存；只有显式附加 `--volumes` 才会删除缓存。
 构建过程执行服务的 Go 单元测试、`go vet` 和编译。开发时也可直接运行
 `go test -race ./...`、`go vet ./...`。
+
+## GitHub Container Registry
+
+推送 `sap-signer-vX.Y.Z` 标签会触发仓库工作流，使用 `majd/ipatool` 作为构建依赖，构建 `linux/amd64` 和 `linux/arm64` 镜像，并发布到：
+
+```text
+ghcr.io/dompling/ipatool-sap-signer:X.Y.Z
+ghcr.io/dompling/ipatool-sap-signer:latest
+```
+
+发布标签必须使用 `sap-signer-v` 前缀。生产部署建议固定具体版本，例如：
+
+```sh
+docker pull ghcr.io/dompling/ipatool-sap-signer:1.0.0
+```
+
+GitHub Actions 使用仓库内置的 `GITHUB_TOKEN` 推送 GHCR，不需要额外配置 Token；仓库或组织的 Actions 设置必须允许该 Token 写入 Packages。
 
 `smoke_test.py` 使用合成表单、DMAP、含零字节及非 UTF-8 字节的二进制、XML，
 实际完成 Apple SAP 握手与签名，并验证未鉴权请求被拒绝。它不发送已购查询，

@@ -1,5 +1,7 @@
 # JAsspp 0.2.1（JSBox App Store 客户端）
 
+> **AI 构建声明**：本项目由 AI 全程构建，包括代码、测试、文档和发布流程。使用前请自行审查代码并在目标设备上验证。
+
 JAsspp 是一个运行在 [JSBox](https://docs.xteko.com) 内的 App Store 客户端实验项目，组合了 Asspp 的交互方式与 `ipatool-sapfix` 使用的 Apple Store 协议。
 
 它目前提供：
@@ -147,7 +149,7 @@ jsbox-asspp/
 `.box` 本质是一个 ZIP，根目录必须包含 `config.json`、`main.js`、`scripts/` 和 `assets/`。
 
 ```bash
-cd /Users/dompling/WebstormProjects/GIT/ipatool-sapfix/jsbox-asspp
+cd jsbox-asspp
 ./pack-box.sh
 ```
 
@@ -178,7 +180,7 @@ Cookie 或登录令牌。已购 `/update` 表单与 `/items` DMAP 使用各自�
 ## 本地验证
 
 ```bash
-cd /Users/dompling/WebstormProjects/GIT/ipatool-sapfix/jsbox-asspp
+cd jsbox-asspp
 node --test tests/*.test.js
 find . -path './dist' -prune -o -name '*.js' -type f -print0 | xargs -0 -n1 node --check
 ./pack-box.sh
@@ -188,6 +190,25 @@ unzip -t dist/JAsspp.box
 Node 测试覆盖 plist、Cookie、认证端点与重定向、Keychain 迁移／回滚、首次免费许可、原账号／历史版本重试、下载去重与确认取消、Range 完整性、版本验证状态、IPA sidecar 与下载账号、OTA、已购 SAP 请求字节一致性，以及已购缓存分页、历史版本渐进显示与取消、列表生命周期、归档分组、失败任务删除和对应版本“打开”入口。
 
 Apple 私有接口、真实账号、超大 IPA、2FA 页面栈和 iOS OTA 仍必须在安装了 JSBox 的真机上验证。
+
+## GitHub Actions 发布
+
+仓库提供两个按标签触发的发布工作流：
+
+- 推送 `jsbox-asspp-vX.Y.Z` 标签时，工作流会先将标签版本自动写入 `config.json` 的 `info.version` 和脚本内的 App 版本，再运行完整 Node 测试、JavaScript 语法检查和 ZIP 校验，生成 `dist/JAsspp.box` 并作为 GitHub Release 附件发布。
+- 推送 `sap-signer-vX.Y.Z` 标签时，工作流会 checkout 已验证提交的 `majd/ipatool` 作为 Docker 构建依赖，构建 `linux/amd64` 和 `linux/arm64` 镜像，并发布到 `ghcr.io/dompling/ipatool-sap-signer`。版本标签会生成同名镜像标签，同时更新 `latest`。
+
+例如：
+
+```bash
+git tag jsbox-asspp-v0.2.1
+git push origin jsbox-asspp-v0.2.1
+
+git tag sap-signer-v1.0.0
+git push origin sap-signer-v1.0.0
+```
+
+GHCR 首次发布后，需要在 GitHub Package 设置中确认镜像可见性。部署时使用对应版本标签比 `latest` 更容易回滚。
 
 ## 已知限制与剩余风险
 
