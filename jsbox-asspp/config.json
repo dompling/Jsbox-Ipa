@@ -1,0 +1,25 @@
+{
+  "info": {
+    "name": "JAsspp",
+    "url": "",
+    "version": "0.2.1",
+    "author": "ipatool-sapfix",
+    "website": "https://github.com/Lakr233/Asspp",
+    "types": 0
+  },
+  "settings": {
+    "minSDKVer": "2.5.0",
+    "minOSVer": "13.0.0",
+    "idleTimerDisabled": false,
+    "autoKeyboardEnabled": false,
+    "keyboardToolbarEnabled": false,
+    "rotateDisabled": true,
+    "theme": "auto"
+  },
+  "widget": {
+    "height": 0,
+    "staticSize": false,
+    "tintColor": "",
+    "iconColor": ""
+  }
+}

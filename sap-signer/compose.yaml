@@ -1,0 +1,35 @@
+name: ipatool-sap
+
+services:
+  signer:
+    image: ipatool-sap-signer:local
+    build:
+      context: .
+      additional_contexts:
+        ipatool: ../../ipatool
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${SAP_BIND_ADDRESS:-127.0.0.1}:${SAP_PORT:-18080}:8080"
+    environment:
+      SAP_API_TOKEN: "${SAP_API_TOKEN:?Run ./setup.sh to create the API token}"
+      XDG_CACHE_HOME: /cache
+    volumes:
+      - sap-cache:/cache
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 5m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sap-signer", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  sap-cache:
