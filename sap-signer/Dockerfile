@@ -16,7 +16,9 @@ FROM debian:bookworm-slim
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN mkdir /cache && chown 10001:10001 /cache
 COPY --from=build /out/sap-signer /usr/local/bin/sap-signer
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0555 /usr/local/bin/entrypoint.sh
 ENV XDG_CACHE_HOME=/cache
 USER 10001:10001
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/sap-signer"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
