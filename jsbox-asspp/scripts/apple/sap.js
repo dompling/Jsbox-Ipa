@@ -3,11 +3,12 @@
 // scripting 版通过一个临时 WebView + 本地代理运行 sap.wasm。JSBox 没有
 // scripting 的 WebViewController/HttpServer 类型，因此这里用官方 web 组件、
 // $server 和 $http 组合出等价流程：
-//   1. 本地 web 页面加载 assets/sap 下的 WASM 签名引擎；
-//   2. 仅允许代理 https 且主机属于 Apple/mzstatic 家族的 SAP endpoint
+//   1. 本地 web 页面加载 assets/sap 下的页面和运行时脚本；
+//   2. 首次使用从固定的 HTTPS 地址下载 sap.wasm，并缓存到应用沙盒；
+//   3. 仅允许代理 https 且主机属于 Apple/mzstatic 家族的 SAP endpoint
 //      （内置默认端点或 bag 动态下发的端点都走同一套白名单）；
-//   3. 二进制响应以短暂的 Base64 JSON envelope 传给 WebView；
-//   4. 签名结果只在当前请求内存中存在，不写入 prefs/keychain。
+//   4. 二进制响应以短暂的 Base64 JSON envelope 传给 WebView；
+//   5. 签名结果只在当前请求内存中存在，不写入 prefs/keychain。
 // 登录 plist 也先在 JSBox 侧编码成 UTF-8 Base64 再通过 notify 传入页面，
 // 避免 XML 的换行、尖括号或非 ASCII 字符在 WebView 桥接层被隐式重编码。
 //
@@ -24,6 +25,10 @@ const CERTIFICATE_URL = "https://s.mzstatic.com/sap/setupCert.plist";
 const SETUP_URL = "https://fpinit.itunes.apple.com/v1/signSapSetup/legacy";
 const PROXY_PATH = "/__jasspp_sap_proxy__";
 const SIGNER_PAGE = "local://assets/sap/index.html";
+const REMOTE_WASM_URL =
+  "https://github.com/dompling/Jsbox-Ipa/raw/refs/heads/main/sap-signer/sap.wasm";
+const WASM_CACHE_PATH = "cache/sap.wasm";
+const WASM_CACHE_TEMP_PATH = "cache/sap.wasm.part";
 const SIGN_TIMEOUT_SECONDS = 90;
 const API_SIGN_TIMEOUT_SECONDS = 480;
 const MAX_PROXY_BODY_BYTES = 1 << 20;
@@ -43,6 +48,7 @@ const SAP_XML_ONLY_LIMITATION =
   "原生 SAP，或通过 signSapBytes 注入外部字节签名器。";
 
 let queue = Promise.resolve();
+let wasmCachePromise = null;
 
 class SapSignatureError extends Error {
   constructor(message, cause) {
@@ -80,6 +86,145 @@ function bytesOf(value) {
   if (value && typeof value.string === "string") return b64.utf8Encode(value.string);
   if (typeof value === "string") return b64.utf8Encode(value);
   return [];
+}
+
+function binaryLength(value) {
+  if (Array.isArray(value)) return value.length;
+  if (typeof ArrayBuffer !== "undefined") {
+    if (value instanceof ArrayBuffer) return value.byteLength;
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)) {
+      return value.byteLength;
+    }
+  }
+  try {
+    if (value && Array.isArray(value.byteArray)) return value.byteArray.length;
+  } catch (_e) {}
+  return 0;
+}
+
+function hasWasmMagic(value) {
+  let bytes = null;
+  if (Array.isArray(value)) bytes = value;
+  else if (value && Array.isArray(value.byteArray)) bytes = value.byteArray;
+  if (!bytes || bytes.length < 4) return true;
+  return bytes[0] === 0x00 && bytes[1] === 0x61 &&
+    bytes[2] === 0x73 && bytes[3] === 0x6d;
+}
+
+function reportWasmProgress(handler, state) {
+  if (typeof handler !== "function") return;
+  try {
+    handler(Object.assign({ stage: "download" }, state || {}));
+  } catch (_e) {
+    // UI progress must never interrupt authentication.
+  }
+}
+
+function wasmProgressMessage(written, total) {
+  const received = Math.max(0, Number(written) || 0);
+  const expected = Math.max(0, Number(total) || 0);
+  if (expected > 0) {
+    return `正在下载 SAP 签名引擎… ${Math.round(Math.min(1, received / expected) * 100)}%`;
+  }
+  return `正在下载 SAP 签名引擎… 已接收 ${Math.round(received / (1024 * 1024))} MB`;
+}
+
+function hasWasmCache() {
+  return typeof $file !== "undefined" && $file &&
+    typeof $file.exists === "function" && $file.exists(WASM_CACHE_PATH) &&
+    (!($file.isDirectory && $file.isDirectory(WASM_CACHE_PATH)));
+}
+
+async function cacheRemoteWasm(onProgress) {
+  if (hasWasmCache()) {
+    reportWasmProgress(onProgress, {
+      cached: true,
+      progress: 1,
+      message: "SAP 签名引擎已缓存",
+    });
+    return;
+  }
+  if (typeof $file === "undefined" || !$file ||
+      typeof $file.write !== "function" || typeof $file.move !== "function") {
+    throw new SapSignatureError("当前 JSBox 不支持 SAP 签名引擎缓存");
+  }
+
+  if (typeof $file.mkdir === "function") $file.mkdir("cache");
+  if (typeof $file.delete === "function" && $file.exists(WASM_CACHE_TEMP_PATH)) {
+    $file.delete(WASM_CACHE_TEMP_PATH);
+  }
+  reportWasmProgress(onProgress, {
+    cached: false,
+    progress: 0,
+    message: "正在连接 SAP 签名引擎下载服务…",
+  });
+
+  let response;
+  try {
+    response = await http.send({
+      method: "GET",
+      url: REMOTE_WASM_URL,
+      download: true,
+      showsProgress: false,
+      timeout: 300,
+      progress: (written, total) => {
+        const expected = Number(total) || 0;
+        const received = Number(written) || 0;
+        reportWasmProgress(onProgress, {
+          cached: false,
+          written: received,
+          total: expected,
+          progress: expected > 0 ? Math.min(1, received / expected) : null,
+          message: wasmProgressMessage(received, expected),
+        });
+      },
+    });
+  } catch (error) {
+    throw new SapSignatureError("下载 SAP 签名引擎失败：" + errorMessage(error), error);
+  }
+  const status = Number(response && response.status) || 0;
+  if (!response || response.failed || status < 200 || status >= 300) {
+    throw new SapSignatureError(`下载 SAP 签名引擎失败：HTTP ${status || "未知"}`);
+  }
+  const data = response.rawData !== undefined && response.rawData !== null
+    ? response.rawData
+    : response.data;
+  const size = binaryLength(data) || Number(response.expectedContentLength) || 0;
+  if (!data || size < 1024 * 1024) {
+    throw new SapSignatureError("下载的 SAP 签名引擎文件不完整");
+  }
+  if (!hasWasmMagic(data)) {
+    throw new SapSignatureError("下载的 SAP 签名引擎文件格式无效");
+  }
+  const contentType = String(
+    response.headers && response.headers["content-type"] || ""
+  ).split(";", 1)[0].trim().toLowerCase();
+  if (contentType && /^(?:text\/|application\/(?:json|xml))/.test(contentType)) {
+    throw new SapSignatureError("下载的 SAP 签名引擎不是 WASM 文件");
+  }
+  if (!$file.write({ data, path: WASM_CACHE_TEMP_PATH })) {
+    throw new SapSignatureError("无法保存 SAP 签名引擎缓存");
+  }
+  if (!$file.move({ src: WASM_CACHE_TEMP_PATH, dst: WASM_CACHE_PATH })) {
+    throw new SapSignatureError("无法提交 SAP 签名引擎缓存");
+  }
+  reportWasmProgress(onProgress, {
+    cached: true,
+    written: size,
+    total: size,
+    progress: 1,
+    message: "SAP 签名引擎下载完成",
+  });
+}
+
+function ensureWasmCache(onProgress) {
+  if (!wasmCachePromise) {
+    wasmCachePromise = cacheRemoteWasm(onProgress).catch((error) => {
+      wasmCachePromise = null;
+      throw error;
+    });
+  }
+  return wasmCachePromise;
 }
 
 function requestQueryValue(request, key) {
@@ -309,15 +454,34 @@ function startProxy() {
 // scripting 版先用本地 HTTP 服务承载 signer 页面。local:// 能加载 HTML，
 // 但部分 JSBox/WebKit 版本无法 fetch(local://.../sap.wasm)，只返回 NSError。
 // 改为同源 HTTP 后，HTML、脚本和 WASM 都从同一个临时服务读取。
-function startSignerResources() {
+async function startSignerResources(onProgress) {
   if (typeof $server === "undefined" || !$server || typeof $server.start !== "function") {
     throw new SapSignatureError("当前 JSBox 不支持本地签名资源服务");
+  }
+
+  let cachedWasm = true;
+  try {
+    await ensureWasmCache(onProgress);
+  } catch (error) {
+    // 兼容仍然内置 sap.wasm 的旧包；新包没有该文件时继续抛出远程下载错误。
+    if (!(typeof $file !== "undefined" && $file &&
+        typeof $file.exists === "function" && $file.exists("assets/sap/sap.wasm"))) {
+      throw error;
+    }
+    cachedWasm = false;
+    reportWasmProgress(onProgress, {
+      cached: true,
+      progress: 1,
+      message: "使用内置 SAP 签名引擎",
+    });
   }
 
   const port = randomPort();
   let server;
   try {
-    server = $server.start({ port, path: "assets/sap" });
+    // 根目录服务同时暴露本地页面和 cache/sap.wasm；页面本身仍只允许加载
+    // assets/sap 下的固定脚本，WASM 通过显式 URL 指向原子写入的缓存文件。
+    server = $server.start({ port, path: "" });
   } catch (error) {
     throw new SapSignatureError(
       "签名资源服务启动失败：" + errorMessage(error),
@@ -329,7 +493,10 @@ function startSignerResources() {
   }
 
   return {
-    url: `http://127.0.0.1:${port}/index.html`,
+    url: `http://127.0.0.1:${port}/assets/sap/index.html`,
+    wasmURL: cachedWasm
+      ? `http://127.0.0.1:${port}/cache/sap.wasm`
+      : `http://127.0.0.1:${port}/assets/sap/sap.wasm`,
     stop: () => {
       try {
         server.stop();
@@ -356,15 +523,22 @@ async function signInWebView(payload) {
   const proxy = await startProxy();
   let resources;
   try {
-    resources = startSignerResources();
+    resources = await startSignerResources(payload && payload.onProgress);
   } catch (error) {
     proxy.stop();
     throw error;
   }
+  reportWasmProgress(payload && payload.onProgress, {
+    stage: "login",
+    cached: true,
+    progress: null,
+    message: "正在登录 Apple ID…",
+  });
   const viewId = `jasspp-sap-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const options = {
     proxyURL: proxy.url,
     proxyEncoding: "base64-json",
+    wasmURL: resources.wasmURL,
   };
   // bag 动态下发的 SAP 端点会随 payload.options 一并交给签名页。
   Object.assign(options, (payload && payload.options) || {});
@@ -543,6 +717,7 @@ function sign(xml, options) {
         // 改变跨桥传输形式，不改变 SAP 的签名内容。
         bodyBase64: b64.base64Encode(b64.utf8Encode(value)),
         options: webOptions(opts),
+        onProgress: opts.onProgress,
       })
     );
   queue = operation.catch(() => {});
@@ -753,5 +928,11 @@ module.exports = {
   PROXY_PATH,
   CERTIFICATE_URL,
   SETUP_URL,
+  REMOTE_WASM_URL,
+  WASM_CACHE_PATH,
+  hasWasmCache,
+  ensureWasmCache,
+  wasmProgressMessage,
+  hasWasmMagic,
   SAP_XML_ONLY_LIMITATION,
 };

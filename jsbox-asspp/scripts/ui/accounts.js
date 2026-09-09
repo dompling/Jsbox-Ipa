@@ -12,6 +12,98 @@ const settings = require("../store/settings");
 const deviceStore = require("../store/device");
 
 const C = common.colors;
+let loginProgressSequence = 0;
+
+function progressIds(prefix) {
+  return {
+    overlay: `${prefix}-overlay`,
+    status: `${prefix}-status`,
+    progress: `${prefix}-progress`,
+  };
+}
+
+function loginProgressOverlay(ids) {
+  return {
+    type: "view",
+    props: {
+      id: ids.overlay,
+      bgcolor: $color("clear"),
+      hidden: true,
+      clipsToBounds: false,
+      userInteractionEnabled: true,
+    },
+    layout: $layout.fill,
+    views: [{
+      type: "view",
+      props: {
+        bgcolor: $color("black"),
+        alpha: 0.08,
+        cornerRadius: 16,
+        smoothCorners: true,
+        userInteractionEnabled: false,
+      },
+      layout: (make, view) => {
+        make.centerX.equalTo(view.super);
+        make.centerY.equalTo(view.super).offset(-3);
+        make.size.equalTo($size(292, 136));
+      },
+    }, {
+      type: "view",
+      props: {
+        bgcolor: C.card,
+        cornerRadius: 16,
+        smoothCorners: true,
+        clipsToBounds: true,
+      },
+      layout: (make, view) => {
+        make.center.equalTo(view.super);
+        make.size.equalTo($size(292, 136));
+      },
+      views: [{
+        type: "spinner",
+        props: {
+          id: `${ids.overlay}-spinner`,
+          loading: true,
+          style: 1,
+          color: C.blue,
+        },
+        layout: (make, view) => {
+          make.centerX.equalTo(view.super);
+          make.top.inset(18);
+          make.size.equalTo($size(24, 24));
+        },
+      }, {
+        type: "label",
+        props: {
+          id: ids.status,
+          text: "正在准备登录 Apple ID…",
+          font: $font(14),
+          textColor: C.label,
+          align: $align.center,
+          lines: 1,
+        },
+        layout: (make, view) => {
+          make.left.right.inset(14);
+          make.top.inset(51);
+          make.height.equalTo(20);
+        },
+      }, {
+        type: "progress",
+        props: {
+          id: ids.progress,
+          value: 0,
+          progressColor: C.blue,
+          hidden: true,
+        },
+        layout: (make, view) => {
+          make.left.right.inset(22);
+          make.bottom.inset(20);
+          make.height.equalTo(5);
+        },
+      }],
+    }],
+  };
+}
 
 // 表单统一「内容列」宽度：水平居中、左右对称（至少 20pt 边距），
 // 大屏（iPad）下限定最大宽度，避免内容被拉得过宽。
@@ -258,6 +350,7 @@ function confirmClear(update) {
 // ---------- 登录：第一步 账号 + 密码 ----------
 
 function addAccountFlow(onSaved) {
+  const progressPrefix = `login-progress-${++loginProgressSequence}`;
   const flow = {
     email: "",
     password: "",
@@ -270,6 +363,8 @@ function addAccountFlow(onSaved) {
     verifyPageAlive: false,
     verifyPushed: false,
     verifyVisible: false,
+    loginProgressIds: progressIds(`${progressPrefix}-login`),
+    verifyProgressIds: progressIds(`${progressPrefix}-verify`),
   };
 
   async function submit(sender) {
@@ -287,7 +382,10 @@ function addAccountFlow(onSaved) {
       return;
     }
     setLoginBusy(flow, true);
-    common.loading(true);
+    showLoginProgress(flow, {
+      stage: "login",
+      message: "正在准备登录 Apple ID…",
+    });
     try {
       const account = await authenticateWithCode(flow);
       finishLogin(account, flow);
@@ -300,7 +398,7 @@ function addAccountFlow(onSaved) {
       }
     } finally {
       if (!flow.finished && !flow.verifyPageAlive) setLoginBusy(flow, false);
-      common.loading(false);
+      hideLoginProgress(flow);
     }
   }
 
@@ -518,8 +616,16 @@ function addAccountFlow(onSaved) {
         type: "scroll",
         props: { bgcolor: C.page, keyboardDismissMode: 1 },
         layout: $layout.fill,
-        views: [appleMark, titleLabel, subtitleLabel, card, loginButton, footnote],
+        views: [
+          appleMark,
+          titleLabel,
+          subtitleLabel,
+          card,
+          loginButton,
+          footnote,
+        ],
       },
+      loginProgressOverlay(flow.loginProgressIds),
     ],
   }));
 }
@@ -683,6 +789,7 @@ function showVerifyStep(flow) {
           },
         ],
       },
+      loginProgressOverlay(flow.verifyProgressIds),
     ],
   }));
 
@@ -695,7 +802,10 @@ function showVerifyStep(flow) {
       return;
     }
     setVerifyBusy(flow, true);
-    common.loading(true);
+    showLoginProgress(flow, {
+      stage: "login",
+      message: "正在登录 Apple ID…",
+    });
     try {
       flow.code = code;
       const account = await authenticateWithCode(flow);
@@ -713,14 +823,14 @@ function showVerifyStep(flow) {
       }
     } finally {
       if (!flow.finished) setVerifyBusy(flow, false);
-      common.loading(false);
+      hideLoginProgress(flow);
     }
   }
 }
 
 // ---------- 认证与收尾 ----------
 
-function authOptions(email, password, code) {
+function authOptions(email, password, code, flow) {
   const existing = accountsStore.getAccount(email);
   // 旧版账号记录可能没有设备标识；缺失时复用全局稳定 GUID，避免登录
   // 因迁移记录不完整而直接失败，也不要为同一设备随机生成新标识。
@@ -736,12 +846,13 @@ function authOptions(email, password, code) {
     // 与 IPA-Tool-3.0 scripting 版一致：优先使用带 SAP 签名的固定 pod
     // 入口，失败后再回退 bag/native 与 legacy。
     preferScriptingEndpoint: true,
+    onProgress: flow ? (state) => updateSapProgress(flow, state) : undefined,
   };
 }
 
 async function authenticateWithCode(flow) {
   return await auth.authenticate(
-    authOptions(flow.email, flow.password, flow.code)
+    authOptions(flow.email, flow.password, flow.code, flow)
   );
 }
 
@@ -801,6 +912,41 @@ function setLoginBusy(flow, busy) {
 function setVerifyBusy(flow, busy) {
   flow.busy = !!busy;
   setEnabled(["code-input", "verify-button"], !busy);
+}
+
+function activeProgressIds(flow) {
+  return flow && flow.verifyPageAlive ? flow.verifyProgressIds : flow && flow.loginProgressIds;
+}
+
+function showLoginProgress(flow, state) {
+  if (!flow || flow.finished || !state) return;
+  try {
+    const ids = activeProgressIds(flow);
+    const overlay = ids && $ui.get(ids.overlay);
+    const status = ids && $ui.get(ids.status);
+    const progress = ids && $ui.get(ids.progress);
+    if (!overlay || !status || !progress) return;
+    overlay.hidden = false;
+    status.text = String(state.message || "正在处理 Apple ID 登录…");
+    const downloading = state.stage === "download";
+    progress.hidden = !downloading;
+    progress.value = typeof state.progress === "number" && Number.isFinite(state.progress)
+      ? Math.max(0, Math.min(1, state.progress))
+      : 0;
+  } catch (_e) {}
+}
+
+function updateSapProgress(flow, state) {
+  showLoginProgress(flow, state);
+}
+
+function hideLoginProgress(flow) {
+  if (!flow || (!flow.loginPageAlive && !flow.verifyPageAlive)) return;
+  try {
+    const ids = activeProgressIds(flow);
+    const overlay = ids && $ui.get(ids.overlay);
+    if (overlay) overlay.hidden = true;
+  } catch (_e) {}
 }
 
 function clearSecrets(flow) {

@@ -131,7 +131,7 @@ jsbox-asspp/
 │   ├── icon.png
 │   ├── icon57.png
 │   ├── icon512.png
-│   └── sap/                # SAP WASM/Unicorn 签名引擎（登录时按需加载）
+│   └── sap/                # SAP 页面与运行时脚本（WASM 首次登录时按需下载）
 ├── scripts/
 │   ├── config.js
 │   ├── apple/              # bag / auth / purchase / download / public store
@@ -176,6 +176,19 @@ Token 保存在设备钥匙串。地址与 Token 一起保存，缺项时不会�
 Cookie 或登录令牌。已购 `/update` 表单与 `/items` DMAP 使用各自最终发送的字节签名，
 客户端检查响应的 GUID、字节数和签名格式。首次签名可能需要数分钟。
 服务部署见 [sap-signer](../sap-signer/README.md)。
+
+### 登录 SAP 引擎缓存
+
+登录使用的 `sap.wasm` 不再打包进 JSBox 资源目录，首次登录时从以下固定地址下载：
+
+```text
+https://github.com/dompling/Jsbox-Ipa/raw/refs/heads/main/sap-signer/sap.wasm
+```
+
+文件会先写入临时文件，下载完成后原子移动到应用沙盒的 `cache/sap.wasm`；后续登录
+直接使用缓存，不会重复下载。首次下载期间，账号登录页会显示实际字节进度。清理
+JSBox 应用缓存或删除应用后需要重新下载；远程资源不可用时，当前仍包含旧版内置
+WASM 的包会回退使用内置文件。
 
 ## 本地验证
 
