@@ -1,0 +1,34 @@
+name: ipatool-sap-remote
+
+services:
+  signer:
+    image: ghcr.io/dompling/ipatool-sap-signer:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${SAP_BIND_ADDRESS:-127.0.0.1}:${SAP_PORT:-18080}:8080"
+    environment:
+      SAP_API_TOKEN: "${SAP_API_TOKEN:-}"
+      SAP_SETUP_URL: "${SAP_SETUP_URL:-https://fpinit.itunes.apple.com/v1/signSapSetup/legacy}"
+      SAP_CERTIFICATE_URL: "${SAP_CERTIFICATE_URL:-https://s.mzstatic.com/sap/setupCert.plist}"
+      SAP_LISTEN_ADDR: ":8080"
+      XDG_CACHE_HOME: /cache
+    volumes:
+      - sap-cache:/cache
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 5m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sap-signer", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  sap-cache:

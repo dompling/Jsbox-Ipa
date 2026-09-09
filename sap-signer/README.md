@@ -130,6 +130,25 @@ curl --fail-with-body http://127.0.0.1:18080/sign \
 其他 Docker Compose 项目可加入 `ipatool-sap_default` 网络，通过
 `http://signer:8080/sign` 调用。
 
+## 远程镜像部署
+
+远程服务器不需要准备相邻的 `ipatool` 源码，可以直接使用 GHCR 镜像：
+
+```sh
+cd sap-signer
+docker compose -f compose.remote.yaml pull
+docker compose -f compose.remote.yaml up -d
+docker compose -f compose.remote.yaml logs -f signer
+```
+
+默认只绑定远程主机的 `127.0.0.1:18080`，推荐通过 HTTPS 反向代理对外提供服务。
+如需直接绑定指定网卡，在 `.env` 中设置 `SAP_BIND_ADDRESS`；生产环境建议在 `.env`
+中显式设置 `SAP_API_TOKEN`。不设置时会使用镜像入口自动生成并持久化的 Token，
+可从日志中读取，但日志必须当作敏感凭据保护。
+
+镜像地址为 `ghcr.io/dompling/ipatool-sap-signer:latest`。需要固定版本时，将
+`compose.remote.yaml` 中的 `latest` 替换为具体版本标签，例如 `1.0.0`。
+
 ## 维护与验证
 
 ```sh
