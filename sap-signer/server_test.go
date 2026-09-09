@@ -371,9 +371,11 @@ func TestHandlerBoundsQueueWithoutClientDeadline(t *testing.T) {
 	entered, finish := make(chan time.Duration, 1), make(chan struct{})
 	var release sync.Once
 	var factories atomic.Int32
+	var firstDeadline time.Time
 	s := testService(t, func(ctx context.Context, _ sap.Config) (sap.ActionSigner, error) {
 		factories.Add(1)
 		deadline, _ := ctx.Deadline()
+		firstDeadline = deadline
 		return &stubSigner{sign: func([]byte) ([]byte, error) {
 			entered <- time.Until(deadline)
 			<-finish
@@ -399,9 +401,13 @@ func TestHandlerBoundsQueueWithoutClientDeadline(t *testing.T) {
 		if response.Code != http.StatusGatewayTimeout || factories.Load() != 1 {
 			t.Fatalf("server deadline did not bound the queue: HTTP %d, factories %d", response.Code, factories.Load())
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("request without a client deadline remained queued")
+		case <-time.After(2 * time.Second):
+			t.Fatal("request without a client deadline remained queued")
 	}
+	if wait := time.Until(firstDeadline); wait > 0 {
+		time.Sleep(wait + time.Millisecond)
+	}
+	t.Logf("first deadline=%s now=%s remaining=%s", firstDeadline, time.Now(), time.Until(firstDeadline))
 	release.Do(func() { close(finish) })
 	select {
 	case response := <-firstDone:

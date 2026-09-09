@@ -173,11 +173,7 @@ function create(options) {
         make.top.left.right.equalTo(view.super.safeArea);
         make.height.equalTo(HEIGHT);
       },
-      views: [{
-        type: "blur",
-        props: { id: `${id}-blur`, style: 8, userInteractionEnabled: false, isAccessibilityElement: false },
-        layout: $layout.fill,
-      }].concat(opts.root ? [] : [{
+      views: (opts.root ? [] : [{
         type: "button",
         props: { id: `${id}-back`, title: "", bgcolor: $color("clear"), accessibilityLabel: "返回", isAccessibilityElement: true },
         layout: make => { make.left.inset(8); make.top.bottom.inset(0); make.width.equalTo(44); },

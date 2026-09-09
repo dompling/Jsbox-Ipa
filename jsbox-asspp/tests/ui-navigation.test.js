@@ -62,11 +62,9 @@ test("the custom bar and content follow the live safe area and reserve one navig
   const h = setup();
   const page = h.load("ui/common.js").page({ props: { title: "详情" }, views: [] });
   h.context.$ui.push(page);
-  const blur = bar(h, page).definition.views.find(view => view.type === "blur");
-  assert.ok(blur, "the navigation bar needs a frosted background layer");
-  assert.equal(blur.props.style, 8);
-  assert.equal(blur.props.userInteractionEnabled, false);
   const header = bar(h, page).definition;
+  assert.equal(header.props.bgcolor, 'color:"clear"');
+  assert.ok(!header.views.some(view => view.type === "blur"));
   const content = page.views.find(view => /^navigation-content-/.test(view.props.id));
   const parent = { safeArea: { top: "dynamic status-bar edge", left: "safe left", right: "safe right" } };
   const head = constraints(header, parent), body = constraints(content, parent);

@@ -44,11 +44,17 @@ jobs:
 
           const sourcePath = "scripts/config.js";
           const source = fs.readFileSync(sourcePath, "utf8");
-          const updated = source.replace(
-            /(const APP = \{[\s\S]*?\bversion:\s*)"[^"]+"/,
-            `$1"${version}"`
+          const lines = source.split(/\r?\n/);
+          const appStart = lines.findIndex(line => line.includes("const APP = {"));
+          const appEnd = lines.findIndex((line, index) => index > appStart && line.trim() === "};");
+          const versionLine = lines.findIndex(
+            (line, index) => index > appStart && index < appEnd && /^\s*version:\s*"/.test(line)
           );
-          if (updated === source) throw new Error("APP.version was not found");
+          if (appStart < 0 || appEnd < 0 || versionLine < 0) {
+            throw new Error("APP.version was not found");
+          }
+          lines[versionLine] = lines[versionLine].replace(/"[^"]+"/, `"${version}"`);
+          const updated = lines.join("\n");
           fs.writeFileSync(sourcePath, updated);
           NODE
           echo "value=$version" >> "$GITHUB_OUTPUT"
