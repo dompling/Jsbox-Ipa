@@ -22,7 +22,38 @@ python3 smoke_test.py
 
 `setup.sh` 首次运行生成权限为 `0600` 的 `.env`，其中保存随机 API Token，
 随后构建并启动服务；再次运行会保留 Token。`.env` 不纳入 Git 或镜像。
+如果没有配置 `SAP_API_TOKEN`，容器入口会自动生成 32 字节 Token，持久化到
+`sap-cache` 卷，并在 `docker compose logs signer` 中输出。日志包含 Bearer
+凭据，必须限制日志访问；生产环境建议显式配置 `.env`。
 默认只映射本机 `127.0.0.1:18080`，容器会随 Docker 自动重启。
+
+## 环境变量
+
+Compose 会从当前 shell 和 `sap-signer/.env` 读取以下变量，shell 中的值优先：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SAP_API_TOKEN` | 自动生成 | `/sign` 接口的 Bearer Token。未配置时生成 32 字节随机 Token，保存到 `sap-cache` 卷并输出到日志。 |
+| `SAP_BIND_ADDRESS` | `127.0.0.1` | Docker 主机端口绑定地址。远程部署时可改为服务器网卡地址，或保持本机地址并使用反向代理。 |
+| `SAP_PORT` | `18080` | Docker 主机暴露端口。容器内部固定监听 `8080`。 |
+| `SAP_SETUP_URL` | `https://fpinit.itunes.apple.com/v1/signSapSetup/legacy` | Apple SAP setup 地址。 |
+| `SAP_CERTIFICATE_URL` | `https://s.mzstatic.com/sap/setupCert.plist` | Apple SAP certificate 地址。 |
+
+手动配置示例：
+
+```dotenv
+SAP_API_TOKEN=replace-with-a-random-token-at-least-32-characters
+SAP_BIND_ADDRESS=127.0.0.1
+SAP_PORT=18080
+SAP_SETUP_URL=https://fpinit.itunes.apple.com/v1/signSapSetup/legacy
+SAP_CERTIFICATE_URL=https://s.mzstatic.com/sap/setupCert.plist
+```
+
+如果使用自动生成的 Token，可通过以下命令查看首次生成值：
+
+```sh
+docker compose logs signer | grep 'Generated SAP_API_TOKEN='
+```
 
 首次签名会下载并校验 Apple SAP 运行资源及 Unicorn 动态库，可能需要数分钟。
 资源持久化在 Compose 的 `sap-cache` 卷中，容器更新后可继续使用。
@@ -133,21 +164,3 @@ GitHub Actions 使用仓库内置的 `GITHUB_TOKEN` 推送 GHCR，不需要额�
 实际完成 Apple SAP 握手与签名，并验证未鉴权请求被拒绝。它不发送已购查询，
 也不能代替使用真实 Apple 登录会话验证已购列表。Apple 私有协议或资源下载
 端点变化仍可能影响服务。
-
-## 本机验证记录（2026-09-07）
-
-在 Docker Desktop 的 Linux ARM64 容器中完成实测：
-
-- Go 单元测试、race 检查、`go vet`、编译与格式检查通过。
-- 表单（91 字节）、DMAP（130 字节）、任意二进制（19 字节）、XML
-  （108 字节）均返回 501 字节签名；不同请求体的签名不同。
-- 空缓存首次签名约 31.42 秒，同会话后续签名约 0.02 秒。
-- 重启容器后首次签名约 0.74 秒，四种输入再次通过，持久化缓存正常复用。
-- 未携带 Token 的请求返回 HTTP 401；容器健康检查通过。
-- Unicorn 的 `ldd` 检查没有缺失项，仅依赖容器中的 glibc、libm、libpthread
-  和 ARM64 动态加载器。
-- JSBox 客户端适配器连接本机容器通过：91 字节 `/update` 表单、130 字节
-  `/items` DMAP 和 7 字节非 UTF-8 数据均完成真实签名；两次已购请求的发送字节
-  与签名字节完全一致。此项测试的 Apple 已购响应使用合成数据。
-
-以上耗时是这台机器和当时网络的测量值。未发送真实账号的已购查询。
