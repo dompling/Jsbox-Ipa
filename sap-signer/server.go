@@ -37,6 +37,16 @@ var (
 	errSigningFailed     = errors.New("SAP signing failed")
 )
 
+func contextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 type signerFactory func(context.Context, sap.Config) (sap.ActionSigner, error)
 
 type signingService struct {
@@ -203,14 +213,14 @@ func (s *signingService) handleSign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *signingService) acquire(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
+	if err := contextError(ctx); err != nil {
 		return err
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case s.gate <- struct{}{}:
-		if err := ctx.Err(); err != nil {
+		if err := contextError(ctx); err != nil {
 			<-s.gate
 			return err
 		}
@@ -236,7 +246,7 @@ func (s *signingService) sign(ctx context.Context, guid string, hardware, body [
 		config.HardwareID = append([]byte(nil), hardware...)
 		initCtx, cancel := context.WithTimeout(ctx, initializationTimeout)
 		candidate, err := s.factory(initCtx, config)
-		contextErr := initCtx.Err()
+		contextErr := contextError(initCtx)
 		cancel()
 		if err != nil || contextErr != nil {
 			if candidate != nil {
@@ -252,7 +262,7 @@ func (s *signingService) sign(ctx context.Context, guid string, hardware, body [
 		}
 		s.signer, s.guid = candidate, guid
 	}
-	if err := ctx.Err(); err != nil {
+	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
 	// Keep the gate until Sign returns, even if the client cancels in the meantime.
@@ -265,7 +275,7 @@ func (s *signingService) sign(ctx context.Context, guid string, hardware, body [
 		return nil, fmt.Errorf("%w: %w", errSigningFailed, err)
 	}
 	s.lastUsed = s.now()
-	if err := ctx.Err(); err != nil {
+	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
 	return signature, nil

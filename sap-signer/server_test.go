@@ -401,13 +401,12 @@ func TestHandlerBoundsQueueWithoutClientDeadline(t *testing.T) {
 		if response.Code != http.StatusGatewayTimeout || factories.Load() != 1 {
 			t.Fatalf("server deadline did not bound the queue: HTTP %d, factories %d", response.Code, factories.Load())
 		}
-		case <-time.After(2 * time.Second):
-			t.Fatal("request without a client deadline remained queued")
+	case <-time.After(2 * time.Second):
+		t.Fatal("request without a client deadline remained queued")
 	}
 	if wait := time.Until(firstDeadline); wait > 0 {
 		time.Sleep(wait + time.Millisecond)
 	}
-	t.Logf("first deadline=%s now=%s remaining=%s", firstDeadline, time.Now(), time.Until(firstDeadline))
 	release.Do(func() { close(finish) })
 	select {
 	case response := <-firstDone:
