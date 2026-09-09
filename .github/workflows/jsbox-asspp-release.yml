@@ -1,0 +1,71 @@
+name: Release JAsspp
+
+on:
+  push:
+    tags:
+      - "jsbox-asspp-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package and release JAsspp
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jsbox-asspp
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Sync version from tag
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" =~ ^jsbox-asspp-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+          else
+            echo "Tag $GITHUB_REF_NAME must use jsbox-asspp-vX.Y.Z." >&2
+            exit 1
+          fi
+          node - "$version" <<'NODE'
+          const fs = require("node:fs");
+          const version = process.argv[2];
+          const packagePath = "config.json";
+          const packageConfig = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+          packageConfig.info.version = version;
+          fs.writeFileSync(packagePath, `${JSON.stringify(packageConfig, null, 2)}\n`);
+
+          const sourcePath = "scripts/config.js";
+          const source = fs.readFileSync(sourcePath, "utf8");
+          const updated = source.replace(
+            /(const APP = \{[\s\S]*?\bversion:\s*)"[^"]+"/,
+            `$1"${version}"`
+          );
+          if (updated === source) throw new Error("APP.version was not found");
+          fs.writeFileSync(sourcePath, updated);
+          NODE
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and verify .box
+        run: ./pack-box.sh
+
+      - name: Verify release archive
+        run: unzip -tq "dist/JAsspp.box"
+
+      - name: Create GitHub Release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "jsbox-asspp/dist/JAsspp.box" \
+            --title "JAsspp $VERSION" \
+            --generate-notes

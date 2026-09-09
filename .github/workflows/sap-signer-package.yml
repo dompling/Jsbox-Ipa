@@ -1,0 +1,61 @@
+name: Publish SAP signer package
+
+on:
+  push:
+    tags:
+      - "sap-signer-v*"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/dompling/ipatool-sap-signer
+
+jobs:
+  publish:
+    name: Build and publish container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Check out ipatool build dependency
+        uses: actions/checkout@v4
+        with:
+          repository: majd/ipatool
+          path: ipatool
+          ref: a9bd16c9a211c556650e206245ff34115c725e12
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=match,pattern=sap-signer-v(.*),group=1
+            type=raw,value=latest
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./sap-signer
+          file: ./sap-signer/Dockerfile
+          build-contexts: ipatool=./ipatool
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
