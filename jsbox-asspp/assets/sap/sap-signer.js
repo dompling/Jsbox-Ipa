@@ -62,6 +62,16 @@
     return isAllowedUpstream(value) ? String(value).trim() : fallback;
   }
 
+  // WASM 拥有近乎原生的执行权限，绝不能从任意可配置的远程域加载。
+  // 只允许与脚本自身同源的 URL，否则回退到默认地址。
+  function isSameOriginAsScript(value) {
+    try {
+      return new URL(value, SCRIPT_BASE_URL).origin === new URL(SCRIPT_BASE_URL).origin;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function textToBase64(value) {
     return bytesToBase64(new TextEncoder().encode(value));
   }
