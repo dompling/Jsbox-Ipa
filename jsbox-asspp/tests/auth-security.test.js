@@ -478,3 +478,60 @@ test("legacy bare <dict> responses are parsed as a login result", async () => {
     http.sendWithRedirectRecovery = originalRecovery;
   }
 });
+
+test("an exhausted deadline stops retrying instead of looping behind the login modal", async () => {
+  const originalRecovery = http.sendWithRedirectRecovery;
+  let attempts = 0;
+  http.sendWithRedirectRecovery = async () => {
+    attempts += 1;
+    return { status: 503, finalUrl: "", headers: {}, body: "<html>busy</html>" };
+  };
+  try {
+    await assert.rejects(
+      auth.authenticate({
+        email: "user@example.com",
+        password: "secret",
+        deviceId: "001122334455",
+        authURLOverride: "https://auth.itunes.apple.com/auth/v1/native/fast/",
+        retryDelays: [0, 0, 0, 0, 0],
+        deadlineMs: 0,
+      }),
+      (err) => err instanceof auth.AuthenticationError && /暂不可用/.test(err.message)
+    );
+    // 首轮已完成、但截止时间已到，不应再进入第二轮退避。
+    assert.equal(attempts, 1);
+  } finally {
+    http.sendWithRedirectRecovery = originalRecovery;
+  }
+});
+
+test("credential requests carry a bounded timeout so a stalled request cannot hang the login modal", async () => {
+  const originalRecovery = http.sendWithRedirectRecovery;
+  const timeouts = [];
+  http.sendWithRedirectRecovery = async (options) => {
+    timeouts.push(options.timeout);
+    return {
+      status: 200,
+      finalUrl: options.url,
+      headers: { "x-set-apple-store-front": "143465-1,29" },
+      body: plist.buildPlist({
+        accountInfo: { appleId: "user@example.com", address: {} },
+        passwordToken: "token",
+        dsPersonId: "123",
+      }),
+    };
+  };
+  try {
+    await auth.authenticate({
+      email: "user@example.com",
+      password: "secret",
+      deviceId: "001122334455",
+      authURLOverride: "https://auth.itunes.apple.com/auth/v1/native/fast/",
+    });
+    assert.equal(timeouts.length, 1);
+    assert.ok(Number.isFinite(timeouts[0]) && timeouts[0] > 0, "每次凭据请求都必须带上有限超时");
+    assert.ok(timeouts[0] <= 60, "单次尝试不应无上限地等待");
+  } finally {
+    http.sendWithRedirectRecovery = originalRecovery;
+  }
+});

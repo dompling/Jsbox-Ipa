@@ -560,7 +560,12 @@ async function signInWebView(payload) {
       };
 
       timeout = setTimeout(
-        () => finish(new SapSignatureError("SAP 签名超时，请稍后重试")),
+        () => {
+          finish(new SapSignatureError("SAP 签名超时，请稍后重试"));
+          // 超时后调用方会隐藏登录遮罩；必须同时收起签名页，否则它仍
+          // 盖在登录页上，用户看到的就是一直停在“登录中”。
+          popSignerPage();
+        },
         SIGN_TIMEOUT_SECONDS * 1000
       );
 

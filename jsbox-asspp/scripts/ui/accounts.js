@@ -700,6 +700,13 @@ function showVerifyStep(flow) {
         flow.verifyPageAlive = false;
         flow.verifyPushed = false;
         flow.code = "";
+        // 用户从验证页返回时登录尚未完成：必须在登录页上恢复可交互并清掉
+        // 残留遮罩，否则第一步的“正在准备登录 Apple ID…”弹窗会一直盖住
+        // 表单，按钮也保持禁用，表现为卡在“登录中”。
+        if (!flow.finished) {
+          setLoginBusy(flow, false);
+          hideLoginProgress(flow);
+        }
       },
     },
     views: [
@@ -918,6 +925,14 @@ function activeProgressIds(flow) {
   return flow && flow.verifyPageAlive ? flow.verifyProgressIds : flow && flow.loginProgressIds;
 }
 
+// 登录/验证流程可能先后横跨两张页面，每张页面各有一个进度遮罩。
+// 收尾时必须按页面各自隐藏，不能只隐藏“当前活跃页面”的那一个，否则
+// 2FA 分支里尚未退栈的登录页会一直留着“正在准备登录 Apple ID…”的弹窗。
+function allProgressIds(flow) {
+  if (!flow) return [];
+  return [flow.loginProgressIds, flow.verifyProgressIds].filter(Boolean);
+}
+
 function showLoginProgress(flow, state) {
   if (!flow || flow.finished || !state) return;
   try {
@@ -940,13 +955,16 @@ function updateSapProgress(flow, state) {
   showLoginProgress(flow, state);
 }
 
+// 无论本次登录发起自哪一步、最终成功还是失败，都同时隐藏登录页与验证页
+// 的遮罩。页面已 dealloc 时 $ui.get 返回 null，忽略即可。
 function hideLoginProgress(flow) {
-  if (!flow || (!flow.loginPageAlive && !flow.verifyPageAlive)) return;
-  try {
-    const ids = activeProgressIds(flow);
-    const overlay = ids && $ui.get(ids.overlay);
-    if (overlay) overlay.hidden = true;
-  } catch (_e) {}
+  if (!flow) return;
+  for (const ids of allProgressIds(flow)) {
+    try {
+      const overlay = $ui.get(ids.overlay);
+      if (overlay) overlay.hidden = true;
+    } catch (_e) {}
+  }
 }
 
 function clearSecrets(flow) {

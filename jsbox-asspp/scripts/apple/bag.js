@@ -8,6 +8,9 @@ const plist = require("../lib/plist");
 
 const NATIVE_AUTH_HOST = "auth.itunes.apple.com";
 
+// bag 只用于发现端点，不能让第一次网络往返无限期拖住登录遮罩。
+const BAG_TIMEOUT_SECONDS = 20;
+
 // SAP 引擎需要 setup 证书与 signSapSetup 两个端点。ipatool 从 bag 里读取
 // sign-sap-setup / sign-sap-setup-cert / sign-sap-version，而不是写死；
 // 本地 SAP WASM 引擎只实现 legacy(v1/version=200)，因此只有当 bag 明确给
@@ -127,6 +130,7 @@ async function fetchBag(guid) {
       method: "GET",
       url,
       headers: { Accept: "application/xml" },
+      timeout: BAG_TIMEOUT_SECONDS,
     });
   } catch (_err) {
     return Object.assign({ authURL: fallback }, NO_SAP);

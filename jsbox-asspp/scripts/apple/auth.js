@@ -71,6 +71,15 @@ function resolveRedirectLocation(location, target) {
 const DEFAULT_RETRY_DELAYS = [1200, 2500, 4000, 6000, 8000];
 const MAX_TRIES = 6;
 
+// 单次凭据请求的最长等待时间（秒）。NSURLSession 在网络被劫持/无响应时
+// 可能既不回调也不报错，登录遮罩就会一直留在“正在登录”状态。给每次尝试
+// 设上限后，超时会按瞬时抖动进入下一轮候选，最终一定落到错误弹窗。
+const AUTH_TIMEOUT_SECONDS = 45;
+
+// 整个候选/重试循环的总时长上限（毫秒）。多轮退避叠加可能长达数分钟，
+// 登录遮罩同样会一直显示；到点即收尾并给出明确错误，保证 UI 一定能解开。
+const AUTH_DEADLINE_MS = 150000;
+
 // 应视为“瞬时抖动”的响应状态：换候选端点继续重试，而不是直接判死。
 const TRANSIENT_STATUSES = [204, 301, 302, 403, 404, 429, 500, 502, 503, 504];
 
@@ -144,6 +153,9 @@ async function authenticate(options) {
   const retryDelays = Array.isArray(options.retryDelays)
     ? options.retryDelays
     : DEFAULT_RETRY_DELAYS;
+  const deadlineMs = Number.isFinite(options.deadlineMs)
+    ? Math.max(0, options.deadlineMs)
+    : AUTH_DEADLINE_MS;
   let cookies = options.existingCookies ? [...options.existingCookies] : [];
 
   // 候选端点：native（bag/默认）优先，随后 legacy MZFinance；尊重用户显式覆盖。
@@ -235,6 +247,7 @@ async function authenticate(options) {
           headers: requestHeaders,
           body,
           cookies,
+          timeout: AUTH_TIMEOUT_SECONDS,
         },
         isValid,
         2
@@ -385,6 +398,7 @@ async function authenticate(options) {
 
   let candidateIndex = 0;
   let redirectCount = 0;
+  const deadline = Date.now() + deadlineMs;
   for (let tryIndex = 0; tryIndex < MAX_TRIES; tryIndex++) {
     const target = candidates[candidateIndex % candidates.length];
     const { res, follow } = await tryOnce(target);
@@ -425,6 +439,9 @@ async function authenticate(options) {
     });
 
     if (tryIndex >= MAX_TRIES - 1) break;
+    // 总时长用尽时不再等待下一轮退避；直接收尾，让登录/验证遮罩一定能
+    // 关闭并显示错误，而不是继续转圈。
+    if (Date.now() >= deadline) break;
     await sleep(retryDelays[Math.min(tryIndex, retryDelays.length - 1)]);
     candidateIndex = (candidateIndex + 1) % candidates.length;
   }
