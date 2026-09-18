@@ -51,6 +51,23 @@ class SapSignatureError extends Error {
   }
 }
 
+// 签名审计日志：记录“何时/哪次请求触发了签名”，仅存元数据（时间戳、
+// requestId、签名长度），不落盘原始 XML 或签名内容，避免二次泄露。
+const SAP_AUDIT_LOG_PATH = "cache/sap-audit.log";
+
+function appendSapAuditLog(event, details) {
+  try {
+    if (typeof $file === "undefined" || !$file || typeof $file.write !== "function") return;
+    const entry = JSON.stringify(Object.assign({ ts: Date.now(), event }, details || {}));
+    const prior = typeof $file.read === "function" && $file.exists(SAP_AUDIT_LOG_PATH)
+      ? String(($file.read(SAP_AUDIT_LOG_PATH) || {}).string || "")
+      : "";
+    $file.write({ data: prior + entry + "\n", path: SAP_AUDIT_LOG_PATH });
+  } catch (_e) {
+    // 审计日志失败不能中断签名主流程。
+  }
+}
+
 function randomPort() {
   return PORT_MIN + Math.floor(Math.random() * (PORT_MAX - PORT_MIN + 1));
 }
@@ -226,13 +243,21 @@ function requestQueryValue(request, key) {
     return Array.isArray(query[key]) ? query[key][0] : query[key];
   }
   const raw = String((request && (request.url || request.target)) || "");
-  const match = new RegExp(`[?&]${key}=([^&#]*)`, "i").exec(raw);
-  if (!match) return "";
-  try {
-    return decodeURIComponent(match[1]);
-  } catch (_e) {
-    return "";
+  const queryStart = raw.indexOf("?");
+  if (queryStart < 0) return "";
+  const pairs = raw.slice(queryStart + 1).split("#")[0].split("&");
+  const wanted = String(key).toLowerCase();
+  for (const pair of pairs) {
+    const eq = pair.indexOf("=");
+    const name = (eq < 0 ? pair : pair.slice(0, eq)).toLowerCase();
+    if (name !== wanted) continue;
+    try {
+      return decodeURIComponent(eq < 0 ? "" : pair.slice(eq + 1));
+    } catch (_e) {
+      return "";
+    }
   }
+  return "";
 }
 
 function headerValue(headers, name) {
@@ -595,10 +620,15 @@ async function signInWebView(payload) {
                   if (payload.requestId && payload.requestId !== viewId) return;
                   const value = String(payload.signature || "");
                   if (!value) {
+                    appendSapAuditLog("sapSigned.empty", { requestId: viewId });
                     finish(new SapSignatureError("SAP 签名引擎返回空结果"));
                     popSignerPage();
                     return;
                   }
+                  appendSapAuditLog("sapSigned.ok", {
+                    requestId: viewId,
+                    signatureLength: value.length,
+                  });
                   finish(null, value);
                   popSignerPage();
                 },
@@ -606,6 +636,10 @@ async function signInWebView(payload) {
                   const message = second === undefined ? first : second;
                   const payload = message && message.message ? message.message : message || {};
                   if (payload.requestId && payload.requestId !== viewId) return;
+                  appendSapAuditLog("sapSigned.failed", {
+                    requestId: viewId,
+                    error: errorMessage(payload.error || "SAP 签名失败"),
+                  });
                   finish(
                     new SapSignatureError(
                       "SAP 签名失败：" + errorMessage(payload.error || "SAP 签名失败")
