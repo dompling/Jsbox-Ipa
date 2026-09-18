@@ -201,18 +201,16 @@ test("history metadata deletion is carried into the next version and final persi
   assertPersistedDeletion(state);
 });
 
-test("history metadata failure preserves deletion on the outward error and in storage", async t => {
+test("history metadata failure preserves deletion, keeps the ID unresolved, and continues", async t => {
   const state = fixture(t, [
-    success(), { ...failed(), cookie: deletion, beforeResponse: concurrentCookie }, failed(),
+    success(), { ...failed(), cookie: deletion, beforeResponse: concurrentCookie }, failed(), success("100"),
   ]);
-  await assert.rejects(downloader.listVersions(state.account, app), error => {
-    assert.equal(error.code, "5002");
-    assertDeletionUpdate(error.updatedCookies);
-    return true;
-  });
-  assert.deepEqual(state.requests.map(value => value.id), ["", "200", "200"]);
+  const result = await downloader.listVersions(state.account, app);
+  assert.deepEqual(state.requests.map(value => value.id), ["", "200", "200", "100"]);
   assert.equal(state.requests[2].url, fallbackURL);
   assert.doesNotMatch(state.requests[2].cookie, /obsolete=/);
+  assert.ok(!result.resolvedIds.includes("200"));
+  assertDeletionUpdate(result.updatedCookies);
   assertPersistedDeletion(state);
 });
 

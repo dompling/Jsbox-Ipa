@@ -195,18 +195,17 @@ test("known resolved versions reuse only current matching identities and never r
   assert.doesNotMatch(JSON.stringify(snapshots), /cookie|passwordToken|private|stale/);
 });
 
-for (const failure of ["2034", "2042", "9610", "network"]) {
+for (const failure of ["2034", "2042", "9610"]) {
   test(`metadata ${failure} preserves the last full-ID snapshot and newest cookies`, async t => {
     const snapshots = [];
     t.mock.method(http, "sendWithRedirectRecovery", async options => {
       if (requestedId(options) === "200") return metadataReply(options, "200", "2.0", "resolved");
-      if (failure === "network") return { ...reply(options, {}, "failed"), failed: true, error: new Error("synthetic network failure") };
       return reply(options, { failureType: failure }, "failed");
     });
     await assert.rejects(download.listVersions(account(), app, info(), {
       onVersions: value => snapshots.push(value),
     }), err => {
-      if (failure !== "network") assert.equal(err.code, failure);
+      assert.equal(err.code, failure);
       assert.equal(sessionCookie(err.updatedCookies), "failed");
       return true;
     });
@@ -217,6 +216,21 @@ for (const failure of ["2034", "2042", "9610", "network"]) {
   });
 }
 
+test("metadata network failure leaves that ID unresolved and continues without rejecting", async t => {
+  const snapshots = [];
+  t.mock.method(http, "sendWithRedirectRecovery", async options => {
+    if (requestedId(options) === "200") return metadataReply(options, "200", "2.0", "resolved");
+    return { ...reply(options, {}, "failed"), failed: true, error: new Error("synthetic network failure") };
+  });
+  const result = await download.listVersions(account(), app, info(), {
+    onVersions: value => snapshots.push(value),
+  });
+  assert.deepEqual(result.resolvedIds, ["300", "200"]);
+  assert.deepEqual(snapshots.at(-1).resolvedIds, ["300", "200"]);
+  assert.equal(result.versions.find(value => value.id === "100").displayVersion, "");
+  assert.equal(sessionCookie(result.updatedCookies), "failed");
+});
+
 test("a retry resumes only resolved metadata while retaining default final sorting and return fields", async t => {
   const requested = [], snapshots = [];
   let fail = true;
@@ -226,7 +240,8 @@ test("a retry resumes only resolved metadata while retaining default final sorti
     if (fail && id === "100") throw new Error("synthetic retryable failure");
     return metadataReply(options, id, id === "100" ? "9.0" : "2.0");
   });
-  await assert.rejects(download.listVersions(account(), app, info(), { onVersions: value => snapshots.push(value) }));
+  const first = await download.listVersions(account(), app, info(), { onVersions: value => snapshots.push(value) });
+  assert.deepEqual(first.resolvedIds, ["300", "200"]);
   fail = false;
   const partial = snapshots[snapshots.length - 1];
   const resumed = await download.listVersions(account(), app, info(), {
@@ -235,7 +250,7 @@ test("a retry resumes only resolved metadata while retaining default final sorti
   assert.deepEqual(requested, ["200", "100", "100", "100"], "a failed ID tries both endpoints before a later manual resume");
   assert.deepEqual(resumed.versions.map(value => value.id), ["300", "100", "200"]);
   const normal = await download.listVersions(account(), app, info());
-  assert.deepEqual(Object.keys(resumed).sort(), ["identifiers", "latest", "updatedCookies", "versions"]);
+  assert.deepEqual(Object.keys(resumed).sort(), ["identifiers", "latest", "resolvedIds", "updatedCookies", "versions"]);
   assert.deepEqual(resumed.versions.map(({ updatedCookies, ...value }) => value), normal.versions.map(({ updatedCookies, ...value }) => value));
   assert.deepEqual(resumed.updatedCookies, normal.updatedCookies);
 });
@@ -265,8 +280,10 @@ test("service forwards options and refuses an already cancelled operation before
   const infoCall = t.mock.method(download, "getVersionListInfo", async () => info());
   const listed = t.mock.method(download, "listVersions", async (_acc, _app, initial, options) => {
     assert.equal(initial.latestVersionIdentifier, "300");
-    assert.equal(options, opts);
-    return { identifiers: [], latest: "", versions: [], updatedCookies: [cookie("listed")] };
+    assert.equal(options.onVersions, opts.onVersions);
+    assert.equal(options.shouldContinue, opts.shouldContinue);
+    assert.deepEqual(options.knownVersions, []);
+    return { identifiers: [], latest: "", versions: [], resolvedIds: [], updatedCookies: [cookie("listed")] };
   });
   const opts = { onVersions() {}, shouldContinue: () => true, knownVersions: [] };
   await downloader.listVersions(h.acc, app, opts);

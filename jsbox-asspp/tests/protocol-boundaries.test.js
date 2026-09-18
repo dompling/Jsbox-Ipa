@@ -78,20 +78,31 @@ test("version enumeration rolls cookies forward and propagates auth, license and
   const result = await download.listVersions(account, app);
   assert.deepEqual(calls, [[], ["fresh1"], ["fresh1", "fresh2"]]);
   assert.equal(result.versions.length, 3);
-  for (const code of ["2034", "2042", "9610", "network"]) {
+  for (const code of ["2034", "2042", "9610"]) {
     let first = true;
     send.mock.mockImplementation(async options => {
       if (first) {
         first = false;
         return reply(options, info("103", { bundleShortVersionString: "3.0", softwareVersionExternalIdentifiers: ["101", "103"] }), 200, "fresh");
       }
-      if (code === "network") return { failed: true, error: new Error("synthetic network error"), finalUrl: options.url };
       return reply(options, { failureType: code }, 200, "later");
     });
     await assert.rejects(download.listVersions(account, app), error => {
-      if (code !== "network") assert.equal(error.code, code);
+      assert.equal(error.code, code);
       assert.ok(error.updatedCookies.some(cookie => cookie.name === "fresh"));
       return true;
     });
   }
+
+  let first = true;
+  send.mock.mockImplementation(async options => {
+    if (first) {
+      first = false;
+      return reply(options, info("103", { bundleShortVersionString: "3.0", softwareVersionExternalIdentifiers: ["101", "103"] }), 200, "fresh");
+    }
+    return { failed: true, error: new Error("synthetic network error"), finalUrl: options.url };
+  });
+  const partial = await download.listVersions(account, app);
+  assert.ok(partial.updatedCookies.some(cookie => cookie.name === "fresh"));
+  assert.deepEqual(partial.resolvedIds, ["103"]);
 });
