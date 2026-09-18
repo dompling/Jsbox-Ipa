@@ -241,13 +241,15 @@ async function freeAppForLicense(account, app) {
   return resolved;
 }
 
-async function getLicensedDownloadInfo(account, app, externalVersionId, licensing, options) {
+async function getLicensedDownloadInfo(account, app, externalVersionId, licensing, options, versionListMode) {
   const state = licensing || { attempted: false };
   const request = async () => {
     download.assertVersionListContinues(options, account.cookies);
     let info;
     try {
-      info = await download.getDownloadInfo(account, app, externalVersionId, options);
+      info = versionListMode
+        ? await download.getVersionListInfo(account, app, options)
+        : await download.getDownloadInfo(account, app, externalVersionId, options);
     } catch (err) {
       persistAccount(account, err.updatedCookies);
       download.assertVersionListContinues(options, account.cookies);
@@ -286,7 +288,13 @@ function listVersions(account, app, options) {
     download.assertVersionListContinues(options, acc.cookies);
     assertOriginalAccount(acc, email, region);
     try {
-      const info = await getLicensedDownloadInfo(acc, app, undefined, licensing, options);
+      // 命中版本 ID 列表缓存时，不再为了拿同一份 identifiers 先请求一次最新下载信息。
+      // 直接进入逐条 metadata 补全；未缓存时仍保留原有 license/9610 处理链路。
+      const cachedIds = options && Array.isArray(options.cachedIds) &&
+        options.cachedIds.some(value => String(value || "").trim());
+      const info = cachedIds
+        ? null
+        : await getLicensedDownloadInfo(acc, app, undefined, licensing, options, true);
       const result = await download.listVersions(acc, app, info, options);
       persistAccount(acc, result.updatedCookies);
       download.assertVersionListContinues(options, acc.cookies);

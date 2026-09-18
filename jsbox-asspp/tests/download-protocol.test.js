@@ -252,3 +252,63 @@ test("version listing returns every identifier and requests metadata sequentiall
     http.sendWithRedirectRecovery = original;
   }
 });
+
+test("cached version IDs skip the list request, reuse known metadata, and honor a clicked priority ID", async () => {
+  const original = http.sendWithRedirectRecovery;
+  const requestedVersionIds = [];
+  let priority = "100";
+
+  http.sendWithRedirectRecovery = async (options) => {
+    const payload = plist.parsePlist(options.body);
+    const externalVersionId = String(payload.appExtVrsId || payload.externalVersionId || "");
+    assert.ok(externalVersionId, "cached IDs must skip the initial version-list request");
+    requestedVersionIds.push(externalVersionId);
+    return {
+      status: 200,
+      finalUrl: options.url,
+      headers: {},
+      body: plist.buildPlist({
+        songList: [{ metadata: {
+          bundleShortVersionString: externalVersionId === "100" ? "1.0" : "2.0",
+          bundleVersion: externalVersionId === "100" ? "10" : "20",
+        } }],
+      }),
+    };
+  };
+
+  try {
+    const result = await download.listVersions(
+      {
+        deviceIdentifier: "001122334455",
+        directoryServicesIdentifier: "123",
+        passwordToken: "session-token",
+        storeFrontId: "143465",
+        cookies: [],
+      },
+      { id: "42" },
+      undefined,
+      {
+        cachedIds: ["300", "200", "100"],
+        cachedLatest: "300",
+        knownVersions: [{
+          id: "300",
+          requestedExternalVersionId: "300",
+          externalVersionId: "300",
+          displayVersion: "3.0",
+          buildVersion: "30",
+        }],
+        takePriorityVersionId: () => {
+          const value = priority;
+          priority = "";
+          return value;
+        },
+      }
+    );
+
+    assert.deepEqual(requestedVersionIds, ["100", "200"]);
+    assert.deepEqual(result.versions.map(item => item.id), ["300", "200", "100"]);
+    assert.equal(result.versions.find(item => item.id === "300").displayVersion, "3.0");
+  } finally {
+    http.sendWithRedirectRecovery = original;
+  }
+});

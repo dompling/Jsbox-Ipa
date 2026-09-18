@@ -4,7 +4,7 @@
 
 const APP = {
   name: "JAsspp",
-  version: "0.2.1",
+  version: "0.2.3",
   author: "ipatool-sapfix",
 };
 
@@ -87,6 +87,14 @@ function redownloadEndpoint(guid) {
     host: "downloaddispatch.itunes.apple.com",
     path: `/r/redownload?guid=${guid}`,
     externalVersionIdKey: "appExtVrsId",
+  };
+}
+
+function backgroundUpdateEndpoint(guid) {
+  return {
+    host: "downloaddispatch.itunes.apple.com",
+    path: `/up/backgroundUpdateProduct?guid=${guid}`,
+    externalVersionIdKey: "externalVersionId",
   };
 }
 
@@ -208,6 +216,7 @@ module.exports = {
   storeAPIHost,
   volumeStoreEndpoint,
   redownloadEndpoint,
+  backgroundUpdateEndpoint,
   searchURL,
   lookupURL,
   lookupByBundleURL,

@@ -249,7 +249,7 @@ test("owned-app requests use a bounded network timeout", () => {
   assert.strictEqual(purchases.OWNED_REQUEST_TIMEOUT_SECONDS, 20);
 });
 
-test("owned apps translate XML-only signer failures into actionable guidance", async () => {
+test("owned apps preserve signer diagnostics while adding the business signing step", async () => {
   const originalSend = http.send;
   http.send = daapFlowMock("");
   try {
@@ -257,16 +257,13 @@ test("owned apps translate XML-only signer failures into actionable guidance", a
       purchases.listOwnedApps(account, {
         enrich: false,
         signSapBytes: async () => {
-          throw new Error(
-            "[准备签名] decode XML body: plist: error parsing text property list"
-          );
+          throw new Error("[WASM] synthetic local signer failure");
         },
       }),
       (error) => {
         assert.match(error.message, /\[update-sign\]/);
-        assert.match(error.message, /内置签名引擎只支持登录 XML plist/);
-        assert.match(error.message, /原始字节 ActionSignature/);
-        assert.match(error.message, /error parsing text property list/);
+        assert.match(error.message, /\[WASM\] synthetic local signer failure/);
+        assert.doesNotMatch(error.message, /只支持登录 XML plist/);
         return true;
       }
     );

@@ -262,7 +262,7 @@ test("an already cancelled low-level call retains cookies from supplied initial 
 
 test("service forwards options and refuses an already cancelled operation before HTTP", async t => {
   const h = serviceFixture(t);
-  const infoCall = t.mock.method(download, "getDownloadInfo", async () => info());
+  const infoCall = t.mock.method(download, "getVersionListInfo", async () => info());
   const listed = t.mock.method(download, "listVersions", async (_acc, _app, initial, options) => {
     assert.equal(initial.latestVersionIdentifier, "300");
     assert.equal(options, opts);
@@ -281,7 +281,7 @@ test("service forwards options and refuses an already cancelled operation before
 test("cancellation after initial success persists cookies and skips metadata", async t => {
   const h = serviceFixture(t);
   let active = true;
-  t.mock.method(download, "getDownloadInfo", async () => { active = false; return info(); });
+  t.mock.method(download, "getVersionListInfo", async () => { active = false; return info(); });
   const listed = t.mock.method(download, "listVersions", async () => { throw new Error("unexpected metadata enumeration"); });
   await assert.rejects(downloader.listVersions(h.acc, app, { shouldContinue: () => active }), assertCancelled);
   assert.equal(sessionCookie(h.stored.get(h.acc.email).cookies), "initial");
@@ -294,7 +294,7 @@ for (const outcome of ["success", "2034", "2042"]) {
   test(`service checks cancellation after metadata ${outcome} before exposing it to session refresh`, async t => {
     const h = serviceFixture(t);
     let active = true;
-    t.mock.method(download, "getDownloadInfo", async () => info());
+    t.mock.method(download, "getVersionListInfo", async () => info());
     t.mock.method(download, "listVersions", async () => {
       active = false;
       if (outcome !== "success") throw new download.DownloadError("登录已过期", outcome, [cookie("service-metadata")]);
@@ -311,7 +311,7 @@ for (const failure of ["2034", "2042", "9610"]) {
   test(`cancelled initial ${failure} is persisted before session refresh or licensing can run`, async t => {
     const h = serviceFixture(t);
     let active = true;
-    t.mock.method(download, "getDownloadInfo", async () => {
+    t.mock.method(download, "getVersionListInfo", async () => {
       active = false;
       throw new download.DownloadError("登录已过期 2034; synthetic cancelled response", failure, [cookie("cancelled-initial")]);
     });
@@ -328,7 +328,7 @@ for (const failure of ["success", "2034", "2042", "9610", "5002", "network"]) {
     const h = serviceFixture(t);
     let active = true, settled = false;
     const started = deferred(), response = deferred(), snapshots = [];
-    t.mock.method(download, "getDownloadInfo", async () => info());
+    t.mock.method(download, "getVersionListInfo", async () => info());
     const send = t.mock.method(http, "sendWithRedirectRecovery", async options => {
       started.resolve(options);
       return response.promise;
@@ -358,7 +358,7 @@ for (const failure of ["success", "2034", "2042", "9610", "5002", "network"]) {
 test("cancellation during free-price lookup blocks license acquisition", async t => {
   const h = serviceFixture(t);
   let active = true;
-  t.mock.method(download, "getDownloadInfo", async () => { throw new download.DownloadError("license required", "9610", [cookie("license-error")]); });
+  t.mock.method(download, "getVersionListInfo", async () => { throw new download.DownloadError("license required", "9610", [cookie("license-error")]); });
   h.lookup.mock.mockImplementation(async () => { active = false; return [app]; });
   await assert.rejects(downloader.listVersions(h.acc, { ...app, price: undefined }, { shouldContinue: () => active }), assertCancelled);
   assert.equal(h.lookup.mock.callCount(), 1);
@@ -369,7 +369,7 @@ test("cancellation during free-price lookup blocks license acquisition", async t
 test("cancellation during license acquisition saves its cookies without retrying download info", async t => {
   const h = serviceFixture(t);
   let active = true;
-  const infoCall = t.mock.method(download, "getDownloadInfo", async () => { throw new download.DownloadError("license required", "9610"); });
+  const infoCall = t.mock.method(download, "getVersionListInfo", async () => { throw new download.DownloadError("license required", "9610"); });
   h.buy.mock.mockImplementation(async () => { active = false; return { updatedCookies: [cookie("cancelled-license")] }; });
   await assert.rejects(downloader.listVersions(h.acc, app, { shouldContinue: () => active }), assertCancelled);
   assert.equal(infoCall.mock.callCount(), 1);

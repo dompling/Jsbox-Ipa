@@ -184,21 +184,25 @@
       const request = payload || {};
       const requestId = String(request.requestId || "");
       const options = request.options || {};
+      const guid = String(request.guid || "");
       (async () => {
         try {
-          setSigningStatus("正在准备签名", "正在加载 SAP 签名引擎，请稍候");
-          await loadSapSigner(options);
+          if (!guid) throw new Error("SAP GUID 为空");
+          if (!request.bodyBase64) throw new Error("待签名请求体为空");
+          setSigningStatus("正在准备签名", "正在加载本地 SAP 签名引擎，请稍候");
+          await sapInitialize(guid, options);
           nativeNotify("sapReady", { requestId });
-          setSigningStatus("正在生成签名", "正在与 Apple 安全服务通信");
-          const signature = request.bodyBase64
-            ? await sapSignBytes(String(request.bodyBase64), options)
-            : await sapSign(String(request.xml || ""), options);
+          setSigningStatus("正在生成签名", "正在本机生成 Apple ActionSignature");
+          const signature = await sapSign(String(request.bodyBase64));
           if (!signature) throw new Error("SAP 签名引擎返回空结果");
           nativeNotify("sapSigned", { requestId, signature: String(signature) });
         } catch (error) {
           const message = error && error.message ? error.message : String(error || "未知错误");
           setSigningError(message);
           nativeNotify("sapFailed", { requestId, error: message });
+        } finally {
+          try { await sapClose(); } catch (_e) {}
+          signing = false;
         }
       })();
     };

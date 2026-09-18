@@ -663,7 +663,7 @@ function formatVersionLabel(item, latest) {
 }
 
 // 每个 ID 保留同一行和按钮；补全只改标签，避免打断滚动和下载进度。
-function versionRowView(item, app, onDownload, pageId, region, accountEmail) {
+function versionRowView(item, app, onDownload, onResolve, pageId, region, accountEmail) {
   const titleText = () => {
     const readable = item.displayVersion ? `v${item.displayVersion}`
       : item.resolved ? "版本号未知" : `ID ${item.id}`;
@@ -671,7 +671,11 @@ function versionRowView(item, app, onDownload, pageId, region, accountEmail) {
   };
   const subtitleText = () => [
     item.buildVersion ? `构建 ${item.buildVersion}` : "",
-    item.resolved || item.displayVersion ? `ID ${item.id}` : "版本号待补全",
+    item.resolved || item.displayVersion
+      ? `ID ${item.id}`
+      : item.priority
+      ? "已加入优先获取"
+      : "版本号待补全 · 点按优先获取",
   ].filter(Boolean).join(" · ");
   const title = {
     type: "label",
@@ -718,7 +722,14 @@ function versionRowView(item, app, onDownload, pageId, region, accountEmail) {
         64,
         { app, region, accountEmail, version: { externalVersionId: item.id } }
       ),
-    ], { staticCell: true, inset: 16 }),
+    ], {
+      staticCell: true,
+      inset: 16,
+      onTap: () => {
+        if (!item.resolved && typeof onResolve === "function") onResolve(item);
+      },
+      accessibilityLabel: item.resolved ? `版本 ${item.displayVersion || item.id}` : `优先获取版本 ID ${item.id}`,
+    }),
     refresh: (replay) => {
       for (const [label, text] of [[title, titleText()], [subtitle, subtitleText()]]) {
         if (!replay && label.props.text === text) continue;
@@ -731,6 +742,7 @@ function versionRowView(item, app, onDownload, pageId, region, accountEmail) {
 }
 
 function showVersionsPage(app, account, region) {
+  const versionCache = require("../store/version-cache");
   const pageId = ++pageSequence;
   const email = accountsStore.normalizeEmail(account.email);
   const code = String(region).toUpperCase();
@@ -744,6 +756,8 @@ function showVersionsPage(app, account, region) {
   let failure = null;
   let activeDownloads = 0;
   let resumeAfterDownload = false;
+  const priorityVersionIds = [];
+  let cachedSnapshot = versionCache.read(email, code, app.id);
 
   function currentAccount(allowDetached) {
     if (!alive && !allowDetached) return null;
@@ -837,6 +851,13 @@ function showVersionsPage(app, account, region) {
           renderedRows = builtRows;
           refresh();
         },
+        pulled: async (sender) => {
+          try {
+            await refreshVersionList();
+          } finally {
+            if (sender && typeof sender.endRefreshing === "function") sender.endRefreshing();
+          }
+        },
       },
     };
     return definition;
@@ -895,6 +916,27 @@ function showVersionsPage(app, account, region) {
     if (replay) common.refreshDownloadButtons();
   }
 
+  function prioritizeVersion(item) {
+    if (!item || item.resolved) return;
+    const id = String(item.id || "");
+    if (!id) return;
+    if (!priorityVersionIds.includes(id)) priorityVersionIds.push(id);
+    item.priority = true;
+    refresh(true);
+    if (!enumeration && activeDownloads === 0) load();
+  }
+
+  async function refreshVersionList() {
+    if (!alive || activeDownloads > 0) return;
+    const task = enumeration;
+    if (task) {
+      task.stopped = true;
+      try { await task.promise; } catch (_e) {}
+    }
+    cachedSnapshot = null;
+    await load({ refreshList: true });
+  }
+
   function applySnapshot(snapshot) {
     const incoming = new Map((snapshot.versions || []).map((item) => [String(item.id), item]));
     const resolved = new Set((snapshot.resolvedIds || []).map(String));
@@ -905,7 +947,7 @@ function showVersionsPage(app, account, region) {
     for (const entry of entries) if (!incoming.has(entry.item.id)) common.releaseDownloadButtons(entry.view);
     const next = ids.map((id) => {
       const value = incoming.get(id);
-      const entry = existing.get(id) || versionRowView({ id }, app, getVersion, pageId, code, email);
+      const entry = existing.get(id) || versionRowView({ id }, app, getVersion, prioritizeVersion, pageId, code, email);
       Object.assign(entry.item, {
         requestedExternalVersionId: String(value.requestedExternalVersionId || id),
         externalVersionId: String(value.externalVersionId || ""),
@@ -913,7 +955,11 @@ function showVersionsPage(app, account, region) {
         buildVersion: String(value.buildVersion || "").trim(),
         resolved: resolved.has(id),
         latest: id === String(snapshot.latest || ""),
+        priority: resolved.has(id) ? false : !!entry.item.priority,
       });
+      if (entry.item.resolved) {
+        versionCache.setVersion(email, code, app.id, entry.item);
+      }
       return entry;
     });
     const changed = next.length !== entries.length || next.some((entry, index) => entry !== entries[index]);
@@ -926,36 +972,64 @@ function showVersionsPage(app, account, region) {
     refresh();
   }
 
-  function load() {
+  function load(options) {
+    const opts = options || {};
     if (!alive || enumeration || activeDownloads > 0) return;
     const current = currentAccount();
     if (!current) { refresh(); return; }
+
+    const useCachedList = !opts.refreshList && cachedSnapshot && cachedSnapshot.identifiers.length;
     const task = { stopped: false, promise: null };
     enumeration = task;
     loading = true;
     complete = false;
     failure = null;
     refresh();
+
     const shouldContinue = () => {
       if (!currentAccount()) task.stopped = true;
       return alive && enumeration === task && !task.stopped;
     };
+
+    const known = new Map();
+    for (const value of versionCache.knownVersions(email, code, app.id)) {
+      known.set(String(value.id), value);
+    }
+    for (const entry of entries) {
+      if (entry.item.resolved) known.set(String(entry.item.id), {
+        id: entry.item.id,
+        requestedExternalVersionId: entry.item.requestedExternalVersionId,
+        externalVersionId: entry.item.externalVersionId,
+        displayVersion: entry.item.displayVersion,
+        buildVersion: entry.item.buildVersion,
+      });
+    }
+
     task.promise = (async () => {
       try {
         const result = await downloader.listVersions(current, app, {
           shouldContinue,
-          knownVersions: entries.filter((entry) => entry.item.resolved).map(({ item }) => ({
-            id: item.id,
-            requestedExternalVersionId: item.requestedExternalVersionId,
-            externalVersionId: item.externalVersionId,
-            displayVersion: item.displayVersion,
-            buildVersion: item.buildVersion,
-          })),
+          cachedIds: useCachedList ? cachedSnapshot.identifiers : undefined,
+          cachedLatest: useCachedList ? cachedSnapshot.latest : undefined,
+          knownVersions: Array.from(known.values()),
+          takePriorityVersionId: () => priorityVersionIds.shift() || "",
+          onIdentifiers: (value) => {
+            if (!shouldContinue()) return;
+            versionCache.writeList(email, code, app.id, {
+              identifiers: value.ids,
+              latest: value.latest,
+            });
+            cachedSnapshot = versionCache.read(email, code, app.id);
+          },
+          onVersionResolved: (version) => {
+            versionCache.setVersion(email, code, app.id, version);
+          },
           onVersions: (snapshot) => { if (shouldContinue()) applySnapshot(snapshot); },
         });
         if (!shouldContinue()) return;
         const versions = result.versions || (result.identifiers || []).map((id) => ({ id }));
         applySnapshot({ versions, latest: result.latest, resolvedIds: versions.map((item) => item.id), complete: true });
+        cachedSnapshot = versionCache.read(email, code, app.id);
       } catch (err) {
         if (shouldContinue() && String(err.code) !== "version_list_cancelled") {
           failure = err;
@@ -970,6 +1044,28 @@ function showVersionsPage(app, account, region) {
       }
     })();
     return task.promise;
+  }
+
+  function hydrateCachedVersions() {
+    if (!cachedSnapshot || !cachedSnapshot.identifiers.length) return false;
+    const versions = cachedSnapshot.identifiers.map((id) =>
+      cachedSnapshot.versions[id] || {
+        id,
+        requestedExternalVersionId: id,
+        externalVersionId: "",
+        displayVersion: "",
+        buildVersion: "",
+      }
+    );
+    const resolvedIds = cachedSnapshot.identifiers.filter((id) => !!cachedSnapshot.versions[id]);
+    applySnapshot({
+      versions,
+      latest: cachedSnapshot.latest,
+      resolvedIds,
+      complete: resolvedIds.length === versions.length,
+    });
+    loading = !complete;
+    return true;
   }
 
   async function getVersion(item, onProgress, onTask) {
@@ -1012,6 +1108,8 @@ function showVersionsPage(app, account, region) {
     }
   }
 
+  hydrateCachedVersions();
+
   $ui.push(common.page({
     props: common.pageProps({
       title: "历史版本",
@@ -1027,9 +1125,11 @@ function showVersionsPage(app, account, region) {
     },
     views: [list, empty],
   }));
-  // 先提交页面和中心 spinner，再开始可能需要授权的网络操作。
-  if (typeof $delay === "function") $delay(0, load);
-  else load();
+  // 有完整缓存时直接使用；只有存在未解析版本或尚无列表缓存时才继续请求。
+  if (!complete) {
+    if (typeof $delay === "function") $delay(0, load);
+    else load();
+  }
 }
 
 async function downloadVersionFlow(account, app, externalVersionId, region, options) {

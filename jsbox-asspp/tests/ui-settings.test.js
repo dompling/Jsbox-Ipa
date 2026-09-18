@@ -104,7 +104,7 @@ test("settings has one purchased-signature entry opening both fields with no mod
   assert.equal(sapRows.length, 1);
   assert.equal(sapRows[0]._key, "sapConfig");
   assert.equal(sapRows[0].title, "已购签名");
-  assert.equal(sapRows[0].value, "已开启");
+  assert.equal(sapRows[0].value, "API");
   assert.equal(ui.page.props.title, "已购签名");
   assert.equal(ui.urlInput.text, "https://sap.example.com");
   assert.equal(ui.tokenInput.text, "test-token");
@@ -120,10 +120,10 @@ test("the SAP form saves both fields together and refreshes the single settings 
   assert.deepEqual(ui.saved, [{ url: "https://signer.example.com/proxy/sap", token: "updated-token" }]);
   assert.equal(ui.pops(), 1);
   assert.equal(ui.blurs(), 2);
-  assert.deepEqual(ui.messages, ["已开启"]);
+  assert.deepEqual(ui.messages, ["已保存远端回退"]);
   const row = ui.nodes.get("settings-list").data.flatMap((section) => section.rows)
     .find((value) => value._key === "sapConfig");
-  assert.equal(row.value, "已开启");
+  assert.equal(row.value, "API");
   assert.equal(JSON.stringify(row).includes("updated-token"), false);
 });
 
@@ -144,7 +144,7 @@ test("validation and Keychain failures keep the SAP editor open and allow retry"
     ui.settings.setSapConfig = () => {};
     ui.save();
     assert.equal(ui.pops(), 1);
-    assert.deepEqual(ui.messages, ["已开启"]);
+    assert.deepEqual(ui.messages, ["已保存远端回退"]);
   }
 });
 
@@ -167,11 +167,11 @@ test("clearing SAP configuration removes both fields and switches the entry off"
   const ui = editor();
   ui.clear();
   assert.deepEqual(ui.saved, [{ url: "", token: "" }]);
-  assert.deepEqual(ui.messages, ["已关闭"]);
+  assert.deepEqual(ui.messages, ["已清空远端回退"]);
   assert.equal(ui.pops(), 1);
   const row = ui.nodes.get("settings-list").data.flatMap((section) => section.rows)
     .find((value) => value._key === "sapConfig");
-  assert.equal(row.value, "未开启");
+  assert.equal(row.value, "不可用");
 });
 
 test("saving two blank fields disables SAP without a separate toggle", () => {
@@ -180,7 +180,7 @@ test("saving two blank fields disables SAP without a separate toggle", () => {
   ui.tokenInput.text = "   ";
   ui.save();
   assert.deepEqual(ui.saved, [{ url: "", token: "" }]);
-  assert.deepEqual(ui.messages, ["已关闭"]);
+  assert.deepEqual(ui.messages, ["已清空远端回退"]);
 });
 
 test("SAP editor restores scroll insets when the keyboard closes", () => {

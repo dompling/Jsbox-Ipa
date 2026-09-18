@@ -41,7 +41,8 @@ function modeDescription() {
 }
 
 function rawSapLabel() {
-  return settings.rawSapMode() === "api" ? "已开启" : "未开启";
+  const mode = settings.rawSapMode();
+  return mode === "webview" ? "本地" : mode === "api" ? "API" : "不可用";
 }
 
 function sections() {
@@ -78,7 +79,7 @@ function sections() {
       ),
       common.iconMenuRow(
         "已购签名",
-        "SAP 服务配置",
+        "本地 SAP 默认启用 · 远端服务仅作回退",
         rawSapLabel(),
         "sapConfig",
         "signature",
@@ -407,7 +408,7 @@ function promptSapConfig() {
       tokenInput.blur();
       $ui.pop();
       update();
-      common.toast(url ? "已开启" : "已关闭");
+      common.toast(url ? "已保存远端回退" : "已清空远端回退");
     } catch (err) {
       const error = $(errorID);
       if (error) {
@@ -520,7 +521,7 @@ function promptSapConfig() {
               },
               {
                 type: "label",
-                props: { text: "填写后启用，清空后关闭。", font: $font(13), textColor: C.sub, lines: 1 },
+                props: { text: "本地 SAP 已默认启用；这里仅配置可选的远端回退服务。", font: $font(13), textColor: C.sub, lines: 1 },
                 layout: (make) => {
                   make.left.right.inset(4);
                   make.top.equalTo(208);

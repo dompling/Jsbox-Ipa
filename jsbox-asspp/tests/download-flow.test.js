@@ -29,6 +29,7 @@ function fixture(t, options) {
     t.mock.method(session, "withFreshSession", async (acc, run) => run(acc));
   }
   const infoCall = t.mock.method(download, "getDownloadInfo", async () => info);
+  const versionListInfoCall = t.mock.method(download, "getVersionListInfo", async () => info);
   const buy = t.mock.method(purchase, "purchaseApp", async () => ({ updatedCookies: [] }));
   const lookup = t.mock.method(store, "lookupByIds", async () => []);
   const chunks = t.mock.method(stream, "tryChunkedDownload", async (_info, progress) => {
@@ -43,7 +44,7 @@ function fixture(t, options) {
   const save = t.mock.method(library, "saveDownloadedFile", (_path, meta) => ({ ...meta, fileName: "Demo.ipa" }));
   const network = t.mock.method(http, "send", async () => { throw new Error("unexpected whole-file HTTP"); });
   t.after(() => { for (const task of queue.snapshot()) queue.remove(task.id); });
-  return { account, app, info, stored, infoCall, buy, lookup, chunks, validate, save, network };
+  return { account, app, info, stored, infoCall, versionListInfoCall, buy, lookup, chunks, validate, save, network };
 }
 
 function refreshFixture(t, region) {
@@ -369,7 +370,8 @@ test("real session refresh cannot continue historical enumeration in a different
   });
   await assert.rejects(downloader.listVersions(h.account, h.app), /账号.*区域.*变化/);
   assert.equal(h.authenticate.mock.callCount(), 1);
-  assert.equal(h.infoCall.mock.callCount(), 1);
+  assert.equal(h.versionListInfoCall.mock.callCount(), 1);
+  assert.equal(h.infoCall.mock.callCount(), 0);
   assert.equal(listed.mock.callCount(), 1);
   assert.equal(h.buy.mock.callCount(), 0);
 });

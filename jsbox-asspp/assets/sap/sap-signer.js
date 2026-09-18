@@ -4,12 +4,16 @@
   const CERTIFICATE_URL = "https://s.mzstatic.com/sap/setupCert.plist";
   const SETUP_URL = "https://fpinit.itunes.apple.com/v1/signSapSetup/legacy";
   const DEFAULT_PROXY_URL = "http://xiaobai.com/";
+  const directoryURL = value => {
+    const slash = value.lastIndexOf("/");
+    return slash < 0 ? "./" : value.slice(0, slash + 1);
+  };
   const SCRIPT_BASE_URL = (() => {
     const script = typeof document === "undefined" ? null : document.currentScript;
     const base = script && script.src
       ? script.src
       : (typeof document === "undefined" ? "./" : document.baseURI);
-    return new URL(".", base).href;
+    return directoryURL(base);
   })();
   const NATIVE_MEMORY_SHIMS = new Set([
     "_malloc", "_malloc_good_size", "_calloc", "_free",
@@ -22,7 +26,7 @@
   ]);
 
   let runtimePromise = null;
-  let defaultSignerPromise = null;
+  let currentSigner = null;
 
   function loadScript(url) {
     return new Promise((resolve, reject) => {
@@ -41,35 +45,6 @@
       text += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
     }
     return btoa(text);
-  }
-
-  function isAllowedUpstream(value) {
-    const match = /^(https):\/\/([^/?#]+)(\/.*)?$/i.exec(String(value || "").trim());
-    if (!match) return false;
-    if (match[1].toLowerCase() !== "https") return false;
-    const authority = String(match[2]).toLowerCase();
-    if (authority.indexOf("@") >= 0) return false;
-    const host = authority.split(":")[0];
-    return (
-      host === "mzstatic.com" ||
-      host.endsWith(".mzstatic.com") ||
-      host === "apple.com" ||
-      host.endsWith(".apple.com")
-    );
-  }
-
-  function pickEndpoint(value, fallback) {
-    return isAllowedUpstream(value) ? String(value).trim() : fallback;
-  }
-
-  function textToBase64(value) {
-    return bytesToBase64(new TextEncoder().encode(value));
-  }
-
-  // DAAP 购买记录的 items 请求是 DMAP 二进制，不能先转成 UTF-8 字符串，
-  // 否则签名输入会被重编码。调用方传入已经按原始字节编码的 Base64。
-  function normalizeBase64(value) {
-    return String(value || "").replace(/\s+/g, "");
   }
 
   function base64ToBytes(value) {
@@ -112,9 +87,9 @@
     if (runtimePromise) return runtimePromise;
 
     runtimePromise = (async () => {
-      const unicornURL = options.unicornURL || new URL("unicorn_x86.js", SCRIPT_BASE_URL).href;
-      const wasmExecURL = options.wasmExecURL || new URL("wasm_exec.js", SCRIPT_BASE_URL).href;
-      const wasmURL = options.wasmURL || new URL("sap.wasm", SCRIPT_BASE_URL).href;
+      const unicornURL = options.unicornURL || SCRIPT_BASE_URL + "unicorn_x86.js";
+      const wasmExecURL = options.wasmExecURL || SCRIPT_BASE_URL + "wasm_exec.js";
+      const wasmURL = options.wasmURL || SCRIPT_BASE_URL + "sap.wasm";
 
       if (typeof root.MUnicorn !== "function") await loadScript(unicornURL);
       if (typeof root.MUnicorn !== "function") throw new Error("Unicorn.js factory is unavailable");
@@ -148,160 +123,141 @@
   }
 
   function proxyURL(proxyBase, upstream) {
-    const target = new URL(proxyBase, document.baseURI);
-    target.search = "";
-    target.searchParams.set("url", upstream);
-    return target.href;
+    const hashIndex = proxyBase.indexOf("#");
+    const withoutHash = hashIndex < 0 ? proxyBase : proxyBase.slice(0, hashIndex);
+    const queryIndex = withoutHash.indexOf("?");
+    const base = queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex);
+    return `${base}?url=${encodeURIComponent(upstream)}`;
   }
 
-  // JSBox 的本地 $server 为了兼容旧版 WebView，会把二进制响应包装成
-  // `{status, contentType, base64}` JSON。普通浏览器仍走原始二进制响应。
-  async function proxyFetch(proxyBase, upstream, options, proxyEncoding) {
-    const response = await fetch(proxyURL(proxyBase, upstream), options || {});
-    if (proxyEncoding !== "base64-json") return response;
-    let envelope;
-    try {
-      envelope = await response.json();
-    } catch (_error) {
-      throw new Error("SAP 代理返回了无法解析的响应");
+  async function proxyResponseBase64(response, label, options) {
+    if (!response.ok) throw new Error(label + " failed: " + response.status);
+    if (options && options.proxyEncoding === "base64-json") {
+      const envelope = await response.json();
+      if (!envelope || envelope.ok !== true || typeof envelope.base64 !== "string") {
+        throw new Error((envelope && envelope.message) || label + " returned invalid proxy data");
+      }
+      return envelope.base64;
     }
-    const status = Number(envelope && envelope.status) || response.status || 502;
-    const contentType = String(
-      (envelope && envelope.contentType) || "application/octet-stream"
-    );
-    const payload = base64ToBytes(String((envelope && envelope.base64) || ""));
-    return {
-      ok: envelope && envelope.ok === true && status >= 200 && status < 300,
-      status,
-      headers: { get: name => String(name).toLowerCase() === "content-type" ? contentType : null },
-      arrayBuffer: async () => payload.buffer,
-      text: async () => new TextDecoder().decode(payload),
-    };
-  }
-
-  async function requestCertificate(proxyBase, signOptions) {
-    const opts = signOptions || {};
-    const response = await proxyFetch(
-      proxyBase,
-      pickEndpoint(opts.certificateURL, CERTIFICATE_URL),
-      { cache: "no-store" },
-      opts.proxyEncoding
-    );
-    if (!response.ok) throw new Error("fetch SAP setup certificate failed: " + response.status);
     return bytesToBase64(new Uint8Array(await response.arrayBuffer()));
   }
 
-  async function exchangeSetup(proxyBase, requestBase64, signOptions) {
-    const opts = signOptions || {};
-    const response = await proxyFetch(
-      proxyBase,
-      pickEndpoint(opts.setupURL, SETUP_URL),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-plist" },
-        body: base64ToBytes(requestBase64),
-      },
-      opts.proxyEncoding
-    );
-    if (!response.ok) throw new Error("SAP setup request failed: " + response.status);
-    return bytesToBase64(new Uint8Array(await response.arrayBuffer()));
+  async function requestCertificate(proxyBase, options) {
+    const response = await fetch(proxyURL(proxyBase, CERTIFICATE_URL), { cache: "no-store" });
+    return proxyResponseBase64(response, "fetch SAP setup certificate", options);
   }
 
-  async function loadSapSigner(options) {
-    options = options || {};
-    await initialize(options);
-    const proxyBase = options.proxyURL || DEFAULT_PROXY_URL;
-    let queue = Promise.resolve();
+  async function exchangeSetup(proxyBase, requestBase64, options) {
+    const response = await fetch(proxyURL(proxyBase, SETUP_URL), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-plist" },
+      body: base64ToBytes(requestBase64)
+    });
+    return proxyResponseBase64(response, "SAP setup request", options);
+  }
 
-    function signBase64(bodyBase64, signOptions) {
-      const operation = queue.then(async () => {
-        if (typeof bodyBase64 !== "string" || bodyBase64.length === 0) {
-          throw new TypeError("bodyBase64 must be a non-empty string");
-        }
-        const requestProxy = signOptions && signOptions.proxyURL
-          ? signOptions.proxyURL
-          : proxyBase;
-        // 给真机排障用的子步骤定位：出错时在消息前缀标注到底是证书下载、
-        // WASM 准备签名，还是与 Apple 交换 setup 消息 / 完成签名时失败。
-        const stage = (label, error) => {
-          const message = error && (error.message || String(error));
-          return new Error(`[${label}] ${message}`);
-        };
+  class SapSigner {
+    constructor(guid, options) {
+      if (typeof guid !== "string" || guid.trim().length === 0) {
+        throw new TypeError("guid must be a non-empty string");
+      }
 
-        let certificate;
+      this.guid = guid;
+      this.options = options || {};
+      this.queue = Promise.resolve();
+      this.initialized = false;
+    }
+
+    enqueue(operation) {
+      const result = this.queue.then(operation);
+      this.queue = result.catch(() => {});
+      return result;
+    }
+
+    initialize() {
+      return this.enqueue(async () => {
+        if (this.initialized) throw new Error("SAP signer is already initialized");
+        await initialize(this.options);
+
         try {
-          certificate = await requestCertificate(requestProxy, signOptions);
-        } catch (error) {
-          throw stage("证书下载", error);
-        }
-
-        let preparation;
-        try {
-          // Pass explicit UTF-8 bytes across the JS/WASM boundary. SAP signs
-          // the exact request body, so an implicit string conversion is unsafe.
-          preparation = JSON.parse(
-            root.sapWasmPrepareSetup(normalizeBase64(bodyBase64), certificate)
-          );
+          const proxyBase = this.options.proxyURL || DEFAULT_PROXY_URL;
+          const certificate = await requestCertificate(proxyBase, this.options);
+          const preparation = JSON.parse(root.sapWasmPrepareSetup(this.guid, certificate));
           if (preparation.error) throw new Error(preparation.error);
-        } catch (error) {
-          throw stage("准备签名", error);
-        }
 
-        let reply;
-        try {
-          reply = await exchangeSetup(
-            requestProxy,
-            preparation.requestBase64,
-            signOptions
-          );
-        } catch (error) {
-          throw stage("交换 setup", error);
-        }
-
-        try {
+          const reply = await exchangeSetup(proxyBase, preparation.requestBase64, this.options);
           const completion = JSON.parse(root.sapWasmFinishSetup(reply));
           if (completion.error) throw new Error(completion.error);
-          if (
-            typeof completion.signatureBase64 !== "string" ||
-            completion.signatureBase64.length === 0
-          ) {
-            throw new Error("SAP signer returned an empty signature");
-          }
-          return completion.signatureBase64;
+          if (completion.ready !== true) throw new Error("SAP signer setup did not complete");
+
+          this.initialized = true;
+          return true;
         } catch (error) {
-          throw stage("完成签名", error);
+          root.sapWasmClose();
+          throw error;
         }
       });
-      queue = operation.catch(() => {});
-      return operation;
     }
 
-    function sign(xml, signOptions) {
-      if (typeof xml !== "string" || xml.length === 0) {
-        return Promise.reject(new TypeError("xml must be a non-empty string"));
-      }
-      return signBase64(textToBase64(xml), signOptions);
+    sign(bodyBase64) {
+      return this.enqueue(async () => {
+        if (!this.initialized) throw new Error("SAP signer is not initialized");
+        if (typeof bodyBase64 !== "string" || bodyBase64.length === 0) {
+          throw new TypeError("body Base64 must be a non-empty string");
+        }
+
+        const result = JSON.parse(root.sapWasmSign(bodyBase64));
+        if (result.error) throw new Error(result.error);
+        if (typeof result.signatureBase64 !== "string" || result.signatureBase64.length === 0) {
+          throw new Error("SAP signer returned an empty signature");
+        }
+
+        return result.signatureBase64;
+      });
     }
 
-    function signBytes(bodyBase64, signOptions) {
-      return signBase64(bodyBase64, signOptions);
+    close() {
+      return this.enqueue(async () => {
+        if (!this.initialized) return false;
+
+        const result = JSON.parse(root.sapWasmClose());
+        if (result.error) throw new Error(result.error);
+        this.initialized = false;
+        return true;
+      });
     }
-
-    return { sign, signBytes };
   }
 
-  function sapSign(xml, options) {
-    if (!defaultSignerPromise) defaultSignerPromise = loadSapSigner(options || {});
-   
-    return defaultSignerPromise.then(signer => signer.sign(xml, options || {}));
+  async function createSapSigner(guid, options) {
+    const signer = new SapSigner(guid, options || {});
+    await signer.initialize();
+    return signer;
   }
 
-  function sapSignBytes(bodyBase64, options) {
-    if (!defaultSignerPromise) defaultSignerPromise = loadSapSigner(options || {});
-    return defaultSignerPromise.then(signer => signer.signBytes(bodyBase64, options || {}));
+  function sapInitialize(guid, options) {
+    if (currentSigner) return Promise.reject(new Error("SAP signer is already initialized"));
+    currentSigner = new SapSigner(guid, options || {});
+    return currentSigner.initialize().catch(error => {
+      currentSigner = null;
+      throw error;
+    });
   }
 
-  root.loadSapSigner = loadSapSigner;
+  function sapSign(bodyBase64) {
+    if (!currentSigner) return Promise.reject(new Error("SAP signer is not initialized"));
+    return currentSigner.sign(bodyBase64);
+  }
+
+  function sapClose() {
+    if (!currentSigner) return Promise.resolve(false);
+    const signer = currentSigner;
+    currentSigner = null;
+    return signer.close();
+  }
+
+  root.createSapSigner = createSapSigner;
+  root.SapSigner = SapSigner;
+  root.sapInitialize = sapInitialize;
   root.sapSign = sapSign;
-  root.sapSignBytes = sapSignBytes;
+  root.sapClose = sapClose;
 })(typeof globalThis === "undefined" ? window : globalThis);

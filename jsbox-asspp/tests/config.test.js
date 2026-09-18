@@ -25,6 +25,11 @@ test("endpoint builders", () => {
     config.redownloadEndpoint("abc").host,
     "downloaddispatch.itunes.apple.com"
   );
+  assert.deepEqual(config.backgroundUpdateEndpoint("abc"), {
+    host: "downloaddispatch.itunes.apple.com",
+    path: "/up/backgroundUpdateProduct?guid=abc",
+    externalVersionIdKey: "externalVersionId",
+  });
   assert.strictEqual(
     config.purchaseAPIHost("72"),
     "p72-buy.itunes.apple.com"

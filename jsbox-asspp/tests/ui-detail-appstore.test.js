@@ -58,6 +58,7 @@ function harness(app) {
     },
     "../store/accounts": accounts,
     "../store/settings": h.load("store/settings.js"),
+    "../store/version-cache": { read: () => null, knownVersions: () => [], writeList: () => true, setVersion: () => true },
     "./install": {},
     "../lib/format": format,
     "../lib/error": { errorMessage: value => String(value && value.message || value) },

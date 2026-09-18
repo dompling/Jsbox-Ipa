@@ -138,10 +138,10 @@ async function requestDownloadInfo(account, app, externalVersionId, endpoint, re
   return { dict, cookies };
 }
 
-async function downloadInfoCall(account, app, externalVersionId, options, parseResult) {
+async function downloadInfoCall(account, app, externalVersionId, options, parseResult, endpointList) {
   // 账号旧快照中自然过期的 Cookie 不是服务器本次发出的删除更新。
   let cookies = cookieLib.mergeCookies(Array.isArray(account.cookies) ? account.cookies : [], []);
-  const endpoints = [
+  const endpoints = Array.isArray(endpointList) && endpointList.length ? endpointList : [
     config.redownloadEndpoint(account.deviceIdentifier),
     config.volumeStoreEndpoint(account.pod, account.deviceIdentifier),
   ];
@@ -161,6 +161,32 @@ async function downloadInfoCall(account, app, externalVersionId, options, parseR
       }
     }
   }
+}
+
+// 获取历史版本 ID 列表：严格对齐 IPA-Tool-3.0，优先 volumeStore，
+// 无可用 songList 时切到 backgroundUpdateProduct。这里只读取 metadata，
+// 不要求 URL / SINF。
+function getVersionListInfo(account, app, options) {
+  const endpoints = [
+    config.volumeStoreEndpoint(account.pod, account.deviceIdentifier),
+    config.backgroundUpdateEndpoint(account.deviceIdentifier),
+  ];
+  return downloadInfoCall(account, app, undefined, options,
+    ({ dict, cookies }) => {
+      const item = dict.songList[0];
+      const metadata = item.metadata || {};
+      return {
+        requestedExternalVersionId: "",
+        externalVersionId: String(metadata.softwareVersionExternalIdentifier || ""),
+        bundleShortVersionString: metadata.bundleShortVersionString,
+        bundleVersion: metadata.bundleVersion,
+        versionIdentifiers: metadata.softwareVersionExternalIdentifiers || [],
+        latestVersionIdentifier: metadata.softwareVersionExternalIdentifier,
+        updatedCookies: cookies,
+      };
+    },
+    endpoints
+  );
 }
 
 // 获取指定 App 的下载信息（不下载文件本身）。
@@ -346,44 +372,64 @@ async function listVersions(account, app, initialInfo, options) {
   const opts = options || {};
   const initialCookies = cookieLib.mergeCookies(Array.isArray(account.cookies) ? account.cookies : [], []);
   const mergeInitialCookies = cookieUpdateMerger(initialCookies);
-  if (!initialInfo) assertVersionListContinues(opts, initialCookies);
-  let info;
-  try {
-    info = initialInfo || await getDownloadInfo(account, app, undefined, opts);
-  } catch (err) {
-    err.updatedCookies = mergeInitialCookies(err.updatedCookies || []);
-    assertVersionListContinues(opts, err.updatedCookies);
-    throw err;
-  }
-  let updatedCookies = mergeInitialCookies(info.updatedCookies || []);
-  assertVersionListContinues(opts, updatedCookies);
-  const rawIdentifiers = Array.isArray(info.versionIdentifiers)
-    ? info.versionIdentifiers
-    : info.versionIdentifiers
-    ? [info.versionIdentifiers]
-    : [];
-  const identifiers = rawIdentifiers.map((v) => String(v)).filter(Boolean);
-  const latestId = info.latestVersionIdentifier
-    ? String(info.latestVersionIdentifier)
-    : identifiers.length
-    ? identifiers[identifiers.length - 1]
-    : "";
-  const ids = Array.from(new Set(
-    // Apple 的列表通常按旧到新返回；IPA 3.0 同样先反转列表。
-    // latestId 单独置顶也兼容它未出现在历史数组中的响应。
-    (latestId ? [latestId] : []).concat(identifiers.slice().reverse())
+  const cachedIds = Array.from(new Set(
+    (Array.isArray(opts.cachedIds) ? opts.cachedIds : []).map(value => String(value || "")).filter(Boolean)
   ));
-  const latestMetadata = metadataFromDict(
-    {
-      songList: [{ metadata: {
-        bundleShortVersionString: info.bundleShortVersionString,
-        bundleVersion: info.bundleVersion,
-        softwareVersionExternalIdentifier: info.externalVersionId || "",
-      } }],
-    },
-    latestId,
-    updatedCookies
-  );
+
+  let info = initialInfo || null;
+  let updatedCookies = initialCookies;
+  let identifiers = [];
+  let latestId = "";
+  let ids = [];
+  let latestMetadata = null;
+
+  if (cachedIds.length) {
+    // 命中版本列表缓存：打开页面时不重复请求 Apple 的 identifiers。
+    ids = cachedIds;
+    latestId = String(opts.cachedLatest || ids[0] || "");
+    identifiers = ids.slice().reverse();
+  } else {
+    if (!initialInfo) assertVersionListContinues(opts, initialCookies);
+    try {
+      info = initialInfo || await getVersionListInfo(account, app, opts);
+    } catch (err) {
+      err.updatedCookies = mergeInitialCookies(err.updatedCookies || []);
+      assertVersionListContinues(opts, err.updatedCookies);
+      throw err;
+    }
+    updatedCookies = mergeInitialCookies(info.updatedCookies || []);
+    assertVersionListContinues(opts, updatedCookies);
+    const rawIdentifiers = Array.isArray(info.versionIdentifiers)
+      ? info.versionIdentifiers
+      : info.versionIdentifiers
+      ? [info.versionIdentifiers]
+      : [];
+    identifiers = rawIdentifiers.map((v) => String(v)).filter(Boolean);
+    latestId = info.latestVersionIdentifier
+      ? String(info.latestVersionIdentifier)
+      : identifiers.length
+      ? identifiers[identifiers.length - 1]
+      : "";
+    ids = Array.from(new Set(
+      // Apple 的列表通常按旧到新返回；IPA 3.0 同样先反转列表。
+      (latestId ? [latestId] : []).concat(identifiers.slice().reverse())
+    ));
+    latestMetadata = metadataFromDict(
+      {
+        songList: [{ metadata: {
+          bundleShortVersionString: info.bundleShortVersionString,
+          bundleVersion: info.bundleVersion,
+          softwareVersionExternalIdentifier: info.externalVersionId || "",
+        } }],
+      },
+      latestId,
+      updatedCookies
+    );
+    if (typeof opts.onIdentifiers === "function") {
+      try { opts.onIdentifiers({ ids: ids.slice(), identifiers: identifiers.slice(), latest: latestId }); } catch (_e) {}
+    }
+  }
+
   const workingAccount = Object.assign({}, account, {
     cookies: updatedCookies,
   });
@@ -399,7 +445,8 @@ async function listVersions(account, app, initialInfo, options) {
   }
   const resolved = new Set();
   const versions = ids.map(id => {
-    const version = id === latestId && (latestMetadata.displayVersion || latestMetadata.buildVersion)
+    const version = id === latestId && latestMetadata &&
+      (latestMetadata.displayVersion || latestMetadata.buildVersion)
       ? latestMetadata
       : known.get(id);
     if (version) resolved.add(id);
@@ -424,9 +471,21 @@ async function listVersions(account, app, initialInfo, options) {
   publish();
 
   // 顺序读取，避免同一账号的 Cookie 更新在并发请求中互相覆盖。
-  for (let index = 0; index < ids.length; index++) {
-    const id = ids[index];
-    if (resolved.has(id)) continue;
+  // 用户点击某个“待补全”版本时，takePriorityVersionId 会把它插到下一次请求。
+  let cursor = 0;
+  while (resolved.size < ids.length) {
+    let id = "";
+    if (typeof opts.takePriorityVersionId === "function") {
+      try { id = String(opts.takePriorityVersionId() || ""); } catch (_e) { id = ""; }
+    }
+    if (!id || !ids.includes(id) || resolved.has(id)) {
+      while (cursor < ids.length && resolved.has(ids[cursor])) cursor++;
+      if (cursor >= ids.length) break;
+      id = ids[cursor++];
+    }
+
+    const index = ids.indexOf(id);
+    if (index < 0 || resolved.has(id)) continue;
     assertVersionListContinues(opts, updatedCookies);
     const mergeVersionCookies = cookieUpdateMerger(updatedCookies);
     try {
@@ -436,6 +495,9 @@ async function listVersions(account, app, initialInfo, options) {
       assertVersionListContinues(opts, updatedCookies);
       versions[index] = version;
       resolved.add(id);
+      if (typeof opts.onVersionResolved === "function") {
+        try { opts.onVersionResolved(versionDisplayFields(version)); } catch (_e) {}
+      }
       publish();
     } catch (err) {
       err.updatedCookies = mergeVersionCookies(err.updatedCookies || []);
@@ -455,6 +517,7 @@ async function listVersions(account, app, initialInfo, options) {
 
 module.exports = {
   getDownloadInfo,
+  getVersionListInfo,
   getVersionMetadata,
   metadataFromDict,
   sortVersions,

@@ -1,8 +1,8 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const CACHE_PATH = "cache/sap.wasm";
-const TEMP_PATH = "cache/sap.wasm.part";
+const CACHE_PATH = "cache/sap-v2.wasm";
+const TEMP_PATH = "cache/sap-v2.wasm.part";
 
 function loadSap() {
   delete require.cache[require.resolve("../scripts/apple/sap")];

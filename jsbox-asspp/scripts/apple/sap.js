@@ -27,8 +27,8 @@ const PROXY_PATH = "/__jasspp_sap_proxy__";
 const SIGNER_PAGE = "local://assets/sap/index.html";
 const REMOTE_WASM_URL =
   "https://github.com/dompling/Jsbox-Ipa/raw/refs/heads/main/sap-signer/sap.wasm";
-const WASM_CACHE_PATH = "cache/sap.wasm";
-const WASM_CACHE_TEMP_PATH = "cache/sap.wasm.part";
+const WASM_CACHE_PATH = "cache/sap-v2.wasm";
+const WASM_CACHE_TEMP_PATH = "cache/sap-v2.wasm.part";
 const SIGN_TIMEOUT_SECONDS = 90;
 const API_SIGN_TIMEOUT_SECONDS = 480;
 const MAX_PROXY_BODY_BYTES = 1 << 20;
@@ -36,16 +36,9 @@ const UPSTREAM_TIMEOUT_SECONDS = 30;
 const PORT_MIN = 31000;
 const PORT_MAX = 51000;
 
-// 内置 WASM 签名引擎来自 Apple ID Web 登录的 signSapSetup 流程：
-// `sapWasmPrepareSetup` 会把待签名内容当作 XML plist 解析（要求包含 hex
-// `guid`），因此它只能给登录 XML 签名。Apple 已购的 /update 表单与
-// /databases/{rev}/items DMAP 需要像 ipatool 那样对请求原始字节签名，必须
-// 走原生 StoreServices SAP 会话或外部注入的字节签名器，不能交给 WebView。
-const SAP_XML_ONLY_LIMITATION =
-  "当前 JSBox 内置签名引擎只能对包含 guid 的登录 XML plist 签名，" +
-  "无法对已购 update/items 的请求原始字节做 ActionSignature。请在支持 " +
-  "ObjC Runtime（TrollStore/越狱版 JSBox）中重试以启用 StoreServices " +
-  "原生 SAP，或通过 signSapBytes 注入外部字节签名器。";
+// 本地 signer 与 IPA-Tool-3.0 使用同一套 Web SAP runtime。
+// sapWasmSign 接收任意请求体的原始字节 Base64，因此登录 XML、Purchase
+// DAAP /update 表单与 /items DMAP 都可以走同一条本地签名链路。
 
 let queue = Promise.resolve();
 let wasmCachePromise = null;
@@ -459,21 +452,18 @@ async function startSignerResources(onProgress) {
     throw new SapSignatureError("当前 JSBox 不支持本地签名资源服务");
   }
 
-  let cachedWasm = true;
-  try {
-    await ensureWasmCache(onProgress);
-  } catch (error) {
-    // 兼容仍然内置 sap.wasm 的旧包；新包没有该文件时继续抛出远程下载错误。
-    if (!(typeof $file !== "undefined" && $file &&
-        typeof $file.exists === "function" && $file.exists("assets/sap/sap.wasm"))) {
-      throw error;
-    }
-    cachedWasm = false;
+  const bundledWasm = typeof $file !== "undefined" && $file &&
+    typeof $file.exists === "function" && $file.exists("assets/sap/sap.wasm");
+
+  if (bundledWasm) {
     reportWasmProgress(onProgress, {
       cached: true,
       progress: 1,
       message: "使用内置 SAP 签名引擎",
     });
+  } else {
+    // 兼容旧安装包：没有内置新版 WASM 时才下载一次并写入 v2 缓存。
+    await ensureWasmCache(onProgress);
   }
 
   const port = randomPort();
@@ -494,9 +484,9 @@ async function startSignerResources(onProgress) {
 
   return {
     url: `http://127.0.0.1:${port}/assets/sap/index.html`,
-    wasmURL: cachedWasm
-      ? `http://127.0.0.1:${port}/cache/sap.wasm`
-      : `http://127.0.0.1:${port}/assets/sap/sap.wasm`,
+    wasmURL: bundledWasm
+      ? `http://127.0.0.1:${port}/assets/sap/sap.wasm`
+      : `http://127.0.0.1:${port}/${WASM_CACHE_PATH}`,
     stop: () => {
       try {
         server.stop();
@@ -529,10 +519,10 @@ async function signInWebView(payload) {
     throw error;
   }
   reportWasmProgress(payload && payload.onProgress, {
-    stage: "login",
+    stage: "sign",
     cached: true,
     progress: null,
-    message: "正在登录 Apple ID…",
+    message: "正在准备本地 SAP 签名…",
   });
   const viewId = `jasspp-sap-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const options = {
@@ -572,7 +562,7 @@ async function signInWebView(payload) {
       try {
         $ui.push({
           props: {
-            title: "安全登录",
+            title: "SAP 签名",
             bgcolor: $color("systemBackground"),
             theme: "auto",
           },
@@ -618,7 +608,7 @@ async function signInWebView(payload) {
                   if (payload.requestId && payload.requestId !== viewId) return;
                   finish(
                     new SapSignatureError(
-                      "Apple 登录签名失败：" + errorMessage(payload.error || "SAP 签名失败")
+                      "SAP 签名失败：" + errorMessage(payload.error || "SAP 签名失败")
                     )
                   );
                   popSignerPage();
@@ -644,7 +634,7 @@ async function signInWebView(payload) {
                       started.then(resultValue).catch((error) => {
                         finish(
                           new SapSignatureError(
-                            "Apple 登录签名失败：" + errorMessage(error),
+                            "SAP 签名失败：" + errorMessage(error),
                             error
                           )
                         );
@@ -656,7 +646,7 @@ async function signInWebView(payload) {
                   } catch (error) {
                     finish(
                       new SapSignatureError(
-                        "Apple 登录签名失败：" + errorMessage(error),
+                        "SAP 签名失败：" + errorMessage(error),
                         error
                       )
                     );
@@ -691,10 +681,16 @@ async function signInWebView(payload) {
   }
 }
 
+function signerGuid(options) {
+  const opts = options || {};
+  return String(opts.guid || opts.deviceId || "").trim().toUpperCase();
+}
+
 function sign(xml, options) {
   const value = String(xml || "");
   if (!value) return Promise.reject(new SapSignatureError("待签名请求体为空"));
   const opts = options || {};
+  const guid = signerGuid(opts);
 
   if (typeof opts.signSap === "function") {
     return Promise.resolve(opts.signSap(value));
@@ -715,11 +711,13 @@ function sign(xml, options) {
   if (!hasUi || !hasServer) {
     return Promise.reject(new SapSignatureError("当前 JSBox 缺少 SAP 签名所需的 UI/Server 能力"));
   }
+  if (!/^(?:[0-9A-F]{2}){1,20}$/.test(guid)) {
+    return Promise.reject(new SapSignatureError("SAP 请求 GUID 必须是 1 到 20 个完整十六进制字节"));
+  }
 
-    const operation = queue.then(() =>
+  const operation = queue.then(() =>
       signInWebView({
-        // 页面走 signBytes，但输入仍是 XML plist 的原始 UTF-8 字节；这只
-        // 改变跨桥传输形式，不改变 SAP 的签名内容。
+        guid,
         bodyBase64: b64.base64Encode(b64.utf8Encode(value)),
         options: webOptions(opts),
         onProgress: opts.onProgress,
@@ -740,10 +738,8 @@ function supportsRawBodySigning(options) {
   if (opts.rawSapMode === "api") {
     return !!apiSignerConfig(opts);
   }
-  // 原生 SSVFairPlaySAPSession 理论上能对任意原始字节签名，但在 JSBox 里
-  // 可能直接卡住主线程，因此必须由用户显式选择 native 模式后才启用。
-  // WebView 里的 WASM 只是登录 XML 签名器（见 SAP_XML_ONLY_LIMITATION），
-  // 仅 webview 试验模式下才放行，用于把失败原因完整暴露出来。
+  // 原生 SSVFairPlaySAPSession 仍保留为显式兼容模式。
+  // 默认 webview 模式现在使用 IPA-Tool-3.0 同源 runtime，可对任意原始字节签名。
   if (opts.rawSapMode === "native") {
     try {
       return nativeSap.isAvailable();
@@ -761,7 +757,7 @@ function supportsRawBodySigning(options) {
 }
 
 function rawSignerUnavailableMessage() {
-  return "请在设置的「已购签名」中填写服务地址与 API Token。";
+  return "当前 JSBox 缺少本地 WebView/$server SAP 签名能力；也可在设置的「已购签名」中填写服务地址与 API Token 作为回退。";
 }
 
 function rawSignerReject() {
@@ -871,8 +867,7 @@ function signBytes(bytes, options) {
   if (typeof globalThis !== "undefined" && typeof globalThis.__jassppSignSapBytes === "function") {
     return Promise.resolve(globalThis.__jassppSignSapBytes(list));
   }
-  // 第三方签名服务与原生/WebView 一样需要用户显式选择 api 模式；请求体只
-  // 以 Base64 传给签名服务，签名服务不会拿到账号 Cookie/Token。
+  // 保留远端 API 作为兼容/故障回退；默认路径改为本地 WebView/WASM。
   if (options && options.rawSapMode === "api") {
     const config = apiSignerConfig(options);
     if (!config) {
@@ -903,12 +898,13 @@ function signBytes(bytes, options) {
   const hasUi = typeof $ui !== "undefined";
   const hasServer = typeof $server !== "undefined";
   if (opts.rawSapMode === "webview" && hasUi && hasServer) {
+    const guid = signerGuid(opts);
+    if (!/^(?:[0-9A-F]{2}){1,20}$/.test(guid)) {
+      return Promise.reject(new SapSignatureError("SAP 请求 GUID 必须是 1 到 20 个完整十六进制字节"));
+    }
     const operation = queue.then(() =>
       signInWebView({
-        // WebView bridge 只传 Base64，确保 DMAP 0x00、非 ASCII 和换行均不被
-        // JSBox 的字符串桥接层重新编码。注意：当前打包的 WASM 只能解析
-        // 登录 XML plist（见 SAP_XML_ONLY_LIMITATION），此处仅作为将来
-        // 支持原始字节的 WASM 二进制保留的最后尝试，失败信息由调用方翻译。
+        guid,
         bodyBase64: b64.base64Encode(list),
         options: webOptions(opts),
       })
@@ -939,5 +935,4 @@ module.exports = {
   ensureWasmCache,
   wasmProgressMessage,
   hasWasmMagic,
-  SAP_XML_ONLY_LIMITATION,
 };

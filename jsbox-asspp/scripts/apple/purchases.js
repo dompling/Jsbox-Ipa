@@ -285,21 +285,9 @@ async function signedHeaders(account, guid, body, options, stepLabel) {
       signed: false,
       error: rawMessage,
     });
-    // 内置 WASM 只会把待签名内容当登录 XML plist 解析（真机报 “decode XML
-    // body / property list”）。这属于签名器能力不足，不是请求内容问题：
-    // 把难懂的 Go plist 错误翻译成能指导下一步的说明，原始错误保留在后面。
-    if (
-      error instanceof Error &&
-      rawMessage &&
-      /(?:decode .*?XML body|XML body is empty|error parsing text property list)/i.test(rawMessage)
-    ) {
-      error.message =
-        `Apple 已购请求需要原始字节 ActionSignature，但内置签名引擎只支持登录 XML plist。` +
-        `${sap.SAP_XML_ONLY_LIMITATION}（原始错误：${rawMessage}）`;
-    }
-    // 保留签名器内部的子步骤定位信息（[证书下载]/[准备签名]/[交换
-    // setup]/[完成签名]），只补上这是哪一步业务请求。
-    if (stepLabel && error instanceof Error && error.message.indexOf("[") !== 0) {
+    // 本地 signer 与 IPA-Tool-3.0 使用同一套 raw-body SAP runtime。
+    // 保留 signer 原始错误，只在外层补上当前业务步骤，便于真机定位。
+    if (stepLabel && error instanceof Error && !error.message.startsWith(`[${stepLabel}]`)) {
       error.message = `[${stepLabel}] ${error.message}`;
     }
     throw error;

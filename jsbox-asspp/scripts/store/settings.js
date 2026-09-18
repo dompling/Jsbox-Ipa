@@ -117,11 +117,16 @@ const SAP_API_KEYCHAIN_DOMAIN = "com.jasspp.sap";
 const SAP_API_TOKEN_KEY = "sapApiToken";
 const INVALID_SAP_TOKEN = /[\s\u0000-\u001f\u007f]/;
 
-// 已购原始字节签名由完整配置启用，旧 rawSapMode 偏好不再作为独立开关。
+// 默认使用与 IPA-Tool-3.0 同源的本地 WebView/WASM raw-body signer。
+// 仍保留完整的远端 API 配置作为显式兼容回退。
 function rawSapMode() {
-  if (!sapApiURL()) return "off";
+  // 真机 JSBox 优先使用与 IPA-Tool-3.0 同源的本地 WebView/WASM signer。
+  // 旧的远端 API 配置保留作兼容回退，但不再让已保存配置抢占本地模式。
+  if (typeof $ui !== "undefined" && typeof $server !== "undefined") return "webview";
+  const url = sapApiURL();
   const token = sapApiToken().trim();
-  return token && !INVALID_SAP_TOKEN.test(token) ? "api" : "off";
+  if (url && token && !INVALID_SAP_TOKEN.test(token)) return "api";
+  return "off";
 }
 
 function validSapHost(host) {

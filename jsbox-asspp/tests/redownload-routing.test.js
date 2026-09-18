@@ -12,6 +12,7 @@ const account = {
 const app = { id: "42", name: "Demo" };
 const primaryURL = "https://downloaddispatch.itunes.apple.com/r/redownload?guid=001122334455";
 const fallbackURL = "https://p42-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid=001122334455";
+const backgroundURL = "https://downloaddispatch.itunes.apple.com/up/backgroundUpdateProduct?guid=001122334455";
 const item = (extra = {}) => ({
   URL: "https://cdn.example.test/demo.ipa", sinfs: [{ id: 7, sinf: [1, 2, 3] }],
   metadata: { softwareVersionExternalIdentifier: "300", bundleShortVersionString: "3.0", bundleVersion: "30" },
@@ -46,6 +47,39 @@ function setup(t, replies) {
   t.after(() => { global.$http = previous; });
   return requests;
 }
+
+test("version-list discovery follows IPA-Tool volumeStore then backgroundUpdateProduct", async t => {
+  const versions = ["100", "200", "300"];
+  const requests = setup(t, [
+    { dict: { songList: [] } },
+    { dict: { songList: [{ metadata: {
+      softwareVersionExternalIdentifier: "300",
+      softwareVersionExternalIdentifiers: versions,
+      bundleShortVersionString: "3.0",
+      bundleVersion: "30",
+    } }] } },
+  ]);
+  const info = await download.getVersionListInfo(account, app);
+  assert.deepEqual(requests.map(value => value.url), [fallbackURL, backgroundURL]);
+  assert.equal(requests[0].payload.appExtVrsId, undefined);
+  assert.equal(requests[0].payload.externalVersionId, undefined);
+  assert.equal(requests[1].payload.appExtVrsId, undefined);
+  assert.equal(requests[1].payload.externalVersionId, undefined);
+  assert.deepEqual(info.versionIdentifiers.map(String), versions);
+  assert.equal(String(info.latestVersionIdentifier), "300");
+});
+
+test("successful version-list volumeStore request does not touch redownload", async t => {
+  const requests = setup(t, [{ dict: { songList: [{ metadata: {
+    softwareVersionExternalIdentifier: "300",
+    softwareVersionExternalIdentifiers: ["100", "200", "300"],
+    bundleShortVersionString: "3.0",
+    bundleVersion: "30",
+  } }] } }]);
+  const info = await download.getVersionListInfo(account, app);
+  assert.deepEqual(requests.map(value => value.url), [fallbackURL]);
+  assert.equal(String(info.latestVersionIdentifier), "300");
+});
 
 test("successful redownload is the only endpoint and carries the logged-in session", async t => {
   const requests = setup(t, [success()]);
