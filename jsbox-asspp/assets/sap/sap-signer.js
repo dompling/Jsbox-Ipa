@@ -112,6 +112,17 @@
         if (Date.now() >= deadline) throw new Error("SAP WASM initialization timed out");
         await new Promise(resolve => setTimeout(resolve, 10));
       }
+
+      const required = [
+        "sapWasmPrepareSetup",
+        "sapWasmFinishSetup",
+        "sapWasmSign",
+        "sapWasmClose",
+      ];
+      const missing = required.filter(name => typeof root[name] !== "function");
+      if (missing.length) {
+        throw new Error("SAP WASM runtime version mismatch, missing: " + missing.join(", "));
+      }
     })();
 
     try {
@@ -193,7 +204,9 @@
           this.initialized = true;
           return true;
         } catch (error) {
-          root.sapWasmClose();
+          if (typeof root.sapWasmClose === "function") {
+            try { root.sapWasmClose(); } catch (_closeError) {}
+          }
           throw error;
         }
       });
