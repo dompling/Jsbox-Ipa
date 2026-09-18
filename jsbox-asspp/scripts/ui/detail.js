@@ -1028,7 +1028,12 @@ function showVersionsPage(app, account, region) {
         });
         if (!shouldContinue()) return;
         const versions = result.versions || (result.identifiers || []).map((id) => ({ id }));
-        applySnapshot({ versions, latest: result.latest, resolvedIds: versions.map((item) => item.id), complete: true });
+        applySnapshot({
+          versions,
+          latest: result.latest,
+          resolvedIds: Array.isArray(result.resolvedIds) ? result.resolvedIds : versions.map((item) => item.id),
+          complete: true,
+        });
         cachedSnapshot = versionCache.read(email, code, app.id);
       } catch (err) {
         if (shouldContinue() && String(err.code) !== "version_list_cancelled") {

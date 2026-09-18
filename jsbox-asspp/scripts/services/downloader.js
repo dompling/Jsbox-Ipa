@@ -3,6 +3,7 @@
 const http = require("../lib/http");
 const purchase = require("../apple/purchase");
 const download = require("../apple/download");
+const versionSources = require("../apple/version-sources");
 const store = require("../apple/store");
 const accounts = require("../store/accounts");
 const library = require("../store/library");
@@ -292,10 +293,25 @@ function listVersions(account, app, options) {
       // 直接进入逐条 metadata 补全；未缓存时仍保留原有 license/9610 处理链路。
       const cachedIds = options && Array.isArray(options.cachedIds) &&
         options.cachedIds.some(value => String(value || "").trim());
-      const info = cachedIds
-        ? null
-        : await getLicensedDownloadInfo(acc, app, undefined, licensing, options, true);
-      const result = await download.listVersions(acc, app, info, options);
+      const sourcePromise = versionSources.fetchVersionMap(app.id).catch(() => []);
+      const infoPromise = cachedIds
+        ? Promise.resolve(null)
+        : getLicensedDownloadInfo(acc, app, undefined, licensing, options, true);
+      const [sourceVersions, info] = await Promise.all([sourcePromise, infoPromise]);
+
+      const knownById = new Map();
+      for (const value of options && Array.isArray(options.knownVersions) ? options.knownVersions : []) {
+        if (value && value.id) knownById.set(String(value.id), value);
+      }
+      for (const value of sourceVersions) {
+        if (value && value.id && !knownById.has(String(value.id))) {
+          knownById.set(String(value.id), value);
+        }
+      }
+      const listOptions = Object.assign({}, options, {
+        knownVersions: Array.from(knownById.values()),
+      });
+      const result = await download.listVersions(acc, app, info, listOptions);
       persistAccount(acc, result.updatedCookies);
       download.assertVersionListContinues(options, acc.cookies);
       return result;

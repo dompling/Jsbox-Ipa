@@ -452,6 +452,13 @@ async function listVersions(account, app, initialInfo, options) {
     if (version) resolved.add(id);
     return version || versionDisplayFields({ id, requestedExternalVersionId: id });
   });
+  // 批量版本源或持久缓存命中的版本也立即回写；UI 层会按 ID 去重覆盖。
+  if (typeof opts.onVersionResolved === "function") {
+    for (const id of ids) {
+      if (!resolved.has(id)) continue;
+      try { opts.onVersionResolved(versionDisplayFields(versions[ids.indexOf(id)])); } catch (_e) {}
+    }
+  }
   function publish() {
     if (typeof opts.onVersions !== "function") return;
     const snapshot = Object.freeze({
@@ -500,9 +507,19 @@ async function listVersions(account, app, initialInfo, options) {
       }
       publish();
     } catch (err) {
-      err.updatedCookies = mergeVersionCookies(err.updatedCookies || []);
-      assertVersionListContinues(opts, err.updatedCookies);
-      throw err;
+      updatedCookies = mergeVersionCookies(err.updatedCookies || []);
+      workingAccount.cookies = updatedCookies;
+      err.updatedCookies = updatedCookies;
+      assertVersionListContinues(opts, updatedCookies);
+
+      const code = String(err && err.code || "");
+      // 账号/session/许可错误仍交给上层恢复；某一个历史 build 查不到、
+      // 接口返回空项目、网络/协议偶发失败等都只保留该 ID 原样并继续下一条。
+      if (code === "2034" || code === "2042" || code === "9610" ||
+          code === "version_list_cancelled") {
+        throw err;
+      }
+      publish();
     }
   }
   assertVersionListContinues(opts, updatedCookies);
@@ -511,6 +528,7 @@ async function listVersions(account, app, initialInfo, options) {
     identifiers,
     latest: latestId,
     versions: sortVersions(versions, latestId),
+    resolvedIds: ids.filter(id => resolved.has(id)),
     updatedCookies,
   };
 }
