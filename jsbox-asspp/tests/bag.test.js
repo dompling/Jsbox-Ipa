@@ -244,3 +244,33 @@ test("fetchBag 发现到非字符串端点（畸形 plist）时同样回退", as
     restore();
   }
 });
+
+test("bag download endpoints are discovered only from exact Apple downloaddispatch URLs", async () => {
+  const sample = wrappedBag(
+    '<plist version="1.0"><dict><key>urlBag</key><dict>' +
+      '<key>redownloadProduct</key><string>https://downloaddispatch.itunes.apple.com/r/redownload</string>' +
+      '<key>updateProduct</key><string>https://downloaddispatch.itunes.apple.com/up/updateProduct</string>' +
+      "</dict></dict></plist>"
+  );
+  const restore = stubSend(sample);
+  try {
+    const out = await bag.fetchBag(GUID);
+    assert.strictEqual(out.redownloadURL, "https://downloaddispatch.itunes.apple.com/r/redownload");
+    assert.strictEqual(out.updateProductURL, "https://downloaddispatch.itunes.apple.com/up/updateProduct");
+  } finally {
+    restore();
+  }
+
+  assert.strictEqual(
+    bag.normalizeDownloadEndpoint("https://evil.example/up/updateProduct", "/up/updateProduct"),
+    ""
+  );
+  assert.strictEqual(
+    bag.normalizeDownloadEndpoint("http://downloaddispatch.itunes.apple.com/up/updateProduct", "/up/updateProduct"),
+    ""
+  );
+  assert.strictEqual(
+    bag.normalizeDownloadEndpoint("https://downloaddispatch.itunes.apple.com/up/updateProduct?guid=other", "/up/updateProduct"),
+    ""
+  );
+});

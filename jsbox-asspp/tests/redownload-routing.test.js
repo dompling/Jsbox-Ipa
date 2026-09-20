@@ -2,6 +2,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const plist = require("../scripts/lib/plist");
 const download = require("../scripts/apple/download");
+const bag = require("../scripts/apple/bag");
 
 const account = {
   email: "download@example.test", deviceIdentifier: "001122334455", pod: "p42",
@@ -13,6 +14,7 @@ const app = { id: "42", name: "Demo" };
 const primaryURL = "https://downloaddispatch.itunes.apple.com/r/redownload?guid=001122334455";
 const fallbackURL = "https://p42-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid=001122334455";
 const backgroundURL = "https://downloaddispatch.itunes.apple.com/up/backgroundUpdateProduct?guid=001122334455";
+const updateURL = "https://downloaddispatch.itunes.apple.com/up/updateProduct?guid=001122334455";
 const item = (extra = {}) => ({
   URL: "https://cdn.example.test/demo.ipa", sinfs: [{ id: 7, sinf: [1, 2, 3] }],
   metadata: { softwareVersionExternalIdentifier: "300", bundleShortVersionString: "3.0", bundleVersion: "30" },
@@ -170,21 +172,43 @@ test("history metadata with no song item uses the same fallback while unknown ve
 });
 
 for (const code of ["5002", "2034", "2042", "9610"]) {
-  test(`two failed endpoints preserve cookies and final Apple code ${code} without a request loop`, async t => {
+  test(`three failed download endpoints preserve cookies and final Apple code ${code} without a request loop`, async t => {
+    t.mock.method(bag, "fetchBag", async () => ({
+      updateProductURL: "https://downloaddispatch.itunes.apple.com/up/updateProduct",
+    }));
     const requests = setup(t, [
       { dict: { failureType: "5002" }, headers: { "Set-Cookie": "dispatch=1; Domain=.itunes.apple.com; Path=/; Secure" } },
-      { dict: { failureType: code }, headers: { "Set-Cookie": "volume=1; Domain=.itunes.apple.com; Path=/; Secure" } },
+      { dict: { failureType: "5002" }, headers: { "Set-Cookie": "volume=1; Domain=.itunes.apple.com; Path=/; Secure" } },
+      { dict: { failureType: code }, headers: { "Set-Cookie": "update=1; Domain=.itunes.apple.com; Path=/; Secure" } },
     ]);
     await assert.rejects(download.getDownloadInfo(account, app), error => {
       assert.equal(error.code, code);
       assert.equal(error.needsAppStore, code === "9610");
       assert.ok(error.updatedCookies.some(cookie => cookie.name === "dispatch"));
       assert.ok(error.updatedCookies.some(cookie => cookie.name === "volume"));
+      assert.ok(error.updatedCookies.some(cookie => cookie.name === "update"));
       return true;
     });
-    assert.deepEqual(requests.map(value => value.url), [primaryURL, fallbackURL]);
+    assert.deepEqual(requests.map(value => value.url), [primaryURL, fallbackURL, updateURL]);
   });
 }
+
+test("updateProduct supplies the download when redownload and volumeStore do not", async t => {
+  t.mock.method(bag, "fetchBag", async () => ({
+    updateProductURL: "https://downloaddispatch.itunes.apple.com/up/updateProduct",
+  }));
+  const requests = setup(t, [
+    { dict: { songList: [] } },
+    { dict: { songList: [] } },
+    success(),
+  ]);
+  const info = await download.getDownloadInfo(account, app, "300");
+  assert.equal(info.downloadURL, "https://cdn.example.test/demo.ipa");
+  assert.deepEqual(requests.map(value => value.url), [primaryURL, fallbackURL, updateURL]);
+  assert.equal(requests[2].payload.appExtVrsId, "300");
+  assert.equal(requests[2].payload.externalVersionId, undefined);
+  assert.equal(requests[2].payload.serialNumber, "0");
+});
 
 test("cancellation before a request skips both endpoints", async t => {
   const requests = setup(t, []);

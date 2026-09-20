@@ -98,6 +98,15 @@ function backgroundUpdateEndpoint(guid) {
   };
 }
 
+function updateProductEndpoint(guid) {
+  return {
+    host: "downloaddispatch.itunes.apple.com",
+    path: `/up/updateProduct?guid=${guid}`,
+    externalVersionIdKey: "appExtVrsId",
+    includeSerialNumber: true,
+  };
+}
+
 // 公开 API：搜索 / 查询 / 榜单。
 function searchURL(term, country, limit, entity) {
   const params = [
@@ -217,6 +226,7 @@ module.exports = {
   volumeStoreEndpoint,
   redownloadEndpoint,
   backgroundUpdateEndpoint,
+  updateProductEndpoint,
   searchURL,
   lookupURL,
   lookupByBundleURL,

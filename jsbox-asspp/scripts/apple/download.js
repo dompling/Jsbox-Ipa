@@ -7,6 +7,7 @@
 // 兜底；两个接口分别使用 appExtVrsId / externalVersionId 指定历史版本。
 
 const config = require("../config");
+const bag = require("./bag");
 const http = require("../lib/http");
 const plist = require("../lib/plist");
 const cookieLib = require("../lib/cookies");
@@ -57,6 +58,7 @@ async function requestDownloadInfo(account, app, externalVersionId, endpoint, re
     guid: deviceId,
     salableAdamId: app.id,
   };
+  if (endpoint.includeSerialNumber) payload.serialNumber = "0";
   if (externalVersionId !== undefined && externalVersionId !== null && externalVersionId !== "") {
     payload[endpoint.externalVersionIdKey] = String(externalVersionId);
   }
@@ -147,8 +149,18 @@ async function downloadInfoCall(account, app, externalVersionId, options, parseR
   ];
   for (let index = 0; index < endpoints.length; index++) {
     assertVersionListContinues(options, cookies);
+    let endpoint = endpoints[index];
+    if (typeof endpoint === "function") {
+      try {
+        endpoint = await endpoint();
+      } catch (_e) {
+        endpoint = null;
+      }
+      assertVersionListContinues(options, cookies);
+      if (!endpoint) continue;
+    }
     try {
-      const result = await requestDownloadInfo(account, app, externalVersionId, endpoints[index], cookies, options);
+      const result = await requestDownloadInfo(account, app, externalVersionId, endpoint, cookies, options);
       cookies = result.cookies;
       // 下载需要 URL/SINF，历史元数据只需要可用的项目；语义失败也应兜底。
       return parseResult(result);
@@ -189,57 +201,95 @@ function getVersionListInfo(account, app, options) {
   );
 }
 
-// 获取指定 App 的下载信息（不下载文件本身）。
-function getDownloadInfo(account, app, externalVersionId, options) {
-  return downloadInfoCall(account, app, externalVersionId, options,
-    ({ dict, cookies }) => {
-      const item = dict.songList[0];
-      const downloadURL = item.URL || item.url;
-      if (!downloadURL) throw new DownloadError("缺少下载 URL", "", cookies);
-      const metadata = item.metadata || {};
-      const version = metadataFromDict(dict, externalVersionId, cookies);
-      const sinfs = [];
-      for (const sinfItem of item.sinfs || []) {
-        if (sinfItem.id !== undefined && sinfItem.sinf) {
-          let sinfBase64;
-          if (typeof sinfItem.sinf === "string") {
-            sinfBase64 = sinfItem.sinf;
-          } else if (Array.isArray(sinfItem.sinf)) {
-            // <data> 解析结果为字节数组
-            const b64 = require("../lib/b64");
-            sinfBase64 = b64.base64Encode(sinfItem.sinf);
-          } else {
-            throw new DownloadError("无效的 sinf 数据", "", cookies);
-          }
-          sinfs.push({ id: sinfItem.id, sinf: sinfBase64 });
-        }
+function parseDownloadResult(account, externalVersionId, result) {
+  const { dict, cookies } = result;
+  const item = dict.songList[0];
+  const downloadURL = item.URL || item.url;
+  if (!downloadURL) throw new DownloadError("缺少下载 URL", "", cookies);
+  const metadata = item.metadata || {};
+  const version = metadataFromDict(dict, externalVersionId, cookies);
+  const sinfs = [];
+  for (const sinfItem of item.sinfs || []) {
+    if (sinfItem.id !== undefined && sinfItem.sinf) {
+      let sinfBase64;
+      if (typeof sinfItem.sinf === "string") {
+        sinfBase64 = sinfItem.sinf;
+      } else if (Array.isArray(sinfItem.sinf)) {
+        // <data> 解析结果为字节数组
+        const b64 = require("../lib/b64");
+        sinfBase64 = b64.base64Encode(sinfItem.sinf);
+      } else {
+        throw new DownloadError("无效的 sinf 数据", "", cookies);
       }
-      if (!sinfs.length) throw new DownloadError("响应中缺少 sinf", "", cookies);
-
-      // 组装 iTunesMetadata（供后续工具使用/注入）
-      const metadataDict = Object.assign({}, metadata);
-      metadataDict["apple-id"] = account.email;
-      metadataDict["userName"] = account.email;
-      delete metadataDict.passwordToken;
-      delete metadataDict["passwordToken"];
-
-      return {
-        downloadURL,
-        requestedExternalVersionId: version.requestedExternalVersionId,
-        externalVersionId: version.externalVersionId,
-        sinfs,
-        bundleShortVersionString: metadata.bundleShortVersionString,
-        bundleVersion: metadata.bundleVersion,
-        metadata: metadataDict,
-        iTunesMetadataBase64: base64FromString(
-          plist.buildPlist(metadataDict)
-        ),
-        versionIdentifiers: metadata.softwareVersionExternalIdentifiers || [],
-        latestVersionIdentifier:
-          metadata.softwareVersionExternalIdentifier,
-        updatedCookies: cookies,
-      };
+      sinfs.push({ id: sinfItem.id, sinf: sinfBase64 });
     }
+  }
+  if (!sinfs.length) throw new DownloadError("响应中缺少 sinf", "", cookies);
+
+  // 组装 iTunesMetadata（供后续工具使用/注入）
+  const metadataDict = Object.assign({}, metadata);
+  metadataDict["apple-id"] = account.email;
+  metadataDict["userName"] = account.email;
+  delete metadataDict.passwordToken;
+  delete metadataDict["passwordToken"];
+
+  return {
+    downloadURL,
+    requestedExternalVersionId: version.requestedExternalVersionId,
+    externalVersionId: version.externalVersionId,
+    sinfs,
+    bundleShortVersionString: metadata.bundleShortVersionString,
+    bundleVersion: metadata.bundleVersion,
+    metadata: metadataDict,
+    iTunesMetadataBase64: base64FromString(
+      plist.buildPlist(metadataDict)
+    ),
+    versionIdentifiers: metadata.softwareVersionExternalIdentifiers || [],
+    latestVersionIdentifier:
+      metadata.softwareVersionExternalIdentifier,
+    updatedCookies: cookies,
+  };
+}
+
+function endpointFromBagURL(rawURL, guid) {
+  const value = String(rawURL || "").trim();
+  const prefix = "https://downloaddispatch.itunes.apple.com";
+  if (!value.startsWith(prefix)) return null;
+  const path = value.slice(prefix.length);
+  if (path === "/r/redownload") return config.redownloadEndpoint(guid);
+  if (path === "/up/updateProduct") return config.updateProductEndpoint(guid);
+  return null;
+}
+
+// 获取指定 App 的下载信息（不下载文件本身）。
+// 依次尝试 redownload -> volumeStore -> updateProduct。只有前两个都没有
+// 得到可用下载 URL 时才读取 bag.xml；bag 只负责发现/校验 Apple 下载端点，
+// 并与整个 fallback 链共享同一个 Cookie 状态。
+function getDownloadInfo(account, app, externalVersionId, options) {
+  const guid = account.deviceIdentifier;
+  const parseResult = result => parseDownloadResult(account, externalVersionId, result);
+  const endpoints = [
+    config.redownloadEndpoint(guid),
+    config.volumeStoreEndpoint(account.pod, guid),
+    async () => {
+      let discovered = null;
+      try {
+        discovered = await bag.fetchBag(guid);
+      } catch (_e) {}
+      return (
+        endpointFromBagURL(discovered && discovered.updateProductURL, guid) ||
+        config.updateProductEndpoint(guid)
+      );
+    },
+  ];
+
+  return downloadInfoCall(
+    account,
+    app,
+    externalVersionId,
+    options,
+    parseResult,
+    endpoints
   );
 }
 

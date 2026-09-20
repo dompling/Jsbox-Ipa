@@ -17,6 +17,7 @@ const BAG_TIMEOUT_SECONDS = 20;
 // 出 version 200（或缺省）时才采纳 bag 端点，否则回退内置默认值。
 const SAP_SUPPORTED_VERSION = 200;
 const NO_SAP = Object.freeze({ sapSetupURL: "", sapCertURL: "" });
+const NO_DOWNLOAD_ENDPOINTS = Object.freeze({ redownloadURL: "", updateProductURL: "" });
 
 // 真实 bag 响应会把 plist 包在 <Document><Protocol><plist>…</plist></Protocol></Document>
 // 里（裸 plist 也是合法响应）。先截取 <plist> 片段再交给 plist 解析器，
@@ -87,6 +88,25 @@ function normalizeSAPVersion(value) {
   return Number.isSafeInteger(number) ? number : null;
 }
 
+// 下载端点只接受 Apple bag 当前定义的两个精确 downloaddispatch 地址。
+// bag.xml 是“端点清单”，不是 IPA 下载响应本身。
+function normalizeDownloadEndpoint(value, expectedPath) {
+  const raw = String(value === undefined || value === null ? "" : value).trim();
+  if (!raw || raw.length > 256) return "";
+  const match = /^https:\/\/downloaddispatch\.itunes\.apple\.com(\/[^?#]*)$/.exec(raw);
+  if (!match || match[1] !== expectedPath) return "";
+  return raw;
+}
+
+function parseDownloadEndpoints(dict) {
+  const urlBag = dict && dict.urlBag;
+  if (!urlBag || typeof urlBag !== "object") return Object.assign({}, NO_DOWNLOAD_ENDPOINTS);
+  return {
+    redownloadURL: normalizeDownloadEndpoint(urlBag.redownloadProduct, "/r/redownload"),
+    updateProductURL: normalizeDownloadEndpoint(urlBag.updateProduct, "/up/updateProduct"),
+  };
+}
+
 // 从解析后的 plist dict 抽取 SAP 配置。返回对象字段缺失/非法时为空串，
 // 调用方自行决定是否采纳（version 必须 200 或缺省）。
 function parseSAPConfig(dict) {
@@ -133,15 +153,17 @@ async function fetchBag(guid) {
       timeout: BAG_TIMEOUT_SECONDS,
     });
   } catch (_err) {
-    return Object.assign({ authURL: fallback }, NO_SAP);
+    return Object.assign({ authURL: fallback }, NO_SAP, NO_DOWNLOAD_ENDPOINTS);
   }
-  if (res.failed || !res.body) return Object.assign({ authURL: fallback }, NO_SAP);
+  if (res.failed || !res.body) {
+    return Object.assign({ authURL: fallback }, NO_SAP, NO_DOWNLOAD_ENDPOINTS);
+  }
   let dict;
   try {
     dict = plist.parsePlist(extractPlist(res.body));
   } catch (_e) {
     // 非 plist（HTML 错误页 / 区域拦截页等）同样回退默认端点。
-    return Object.assign({ authURL: fallback }, NO_SAP);
+    return Object.assign({ authURL: fallback }, NO_SAP, NO_DOWNLOAD_ENDPOINTS);
   }
   const urlBag = dict && dict.urlBag;
   // authenticateAccount 旧格式在 urlBag 内层，新格式移到 plist 根（ApplePackage）。
@@ -151,9 +173,10 @@ async function fetchBag(guid) {
   // SAP 端点解析不依赖认证端点是否存在：已购等私有接口可能只关心 SAP
   // setup/cert，此时仍要把 SAP 字段带出去，而不是提前回退成空配置。
   const sapResult = sapConfigResult(parseSAPConfig(dict));
-  if (!authURL) return Object.assign({ authURL: fallback }, sapResult);
+  const downloadEndpoints = parseDownloadEndpoints(dict);
+  if (!authURL) return Object.assign({ authURL: fallback }, sapResult, downloadEndpoints);
   const normalized = normalizeAuthURL(authURL);
-  return Object.assign({ authURL: normalized || fallback }, sapResult);
+  return Object.assign({ authURL: normalized || fallback }, sapResult, downloadEndpoints);
 }
 
 // 已购链路专用的 SAP 端点发现：返回 { sapSetupURL, sapCertURL }，无论 bag
@@ -180,5 +203,7 @@ module.exports = {
   normalizeSAPVersion,
   parseSAPConfig,
   sapConfigResult,
+  normalizeDownloadEndpoint,
+  parseDownloadEndpoints,
   SAP_SUPPORTED_VERSION,
 };

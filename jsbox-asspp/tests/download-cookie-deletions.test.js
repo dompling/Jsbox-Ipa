@@ -3,12 +3,14 @@ const assert = require("node:assert/strict");
 const cookies = require("../scripts/lib/cookies");
 const plist = require("../scripts/lib/plist");
 const download = require("../scripts/apple/download");
+const bag = require("../scripts/apple/bag");
 const downloader = require("../scripts/services/downloader");
 const accounts = require("../scripts/store/accounts");
 
 const app = { id: "42", name: "Demo", price: 0 };
 const primaryURL = "https://downloaddispatch.itunes.apple.com/r/redownload?guid=001122334455";
 const fallbackURL = "https://p42-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid=001122334455";
+const updateURL = "https://downloaddispatch.itunes.apple.com/up/updateProduct?guid=001122334455";
 const preserveExpired = { preserveExpired: true };
 const deletion = "obsolete=; Domain=.itunes.apple.com; Path=/; Secure; Max-Age=0";
 const renewal = "obsolete=renewed; Domain=.itunes.apple.com; Path=/; Secure";
@@ -148,9 +150,12 @@ test("download success preserves deletion through persistence without losing con
   assert.deepEqual(state.requests.map(value => value.url), [primaryURL]);
 });
 
-test("failed download endpoints retain a deletion for persistence while fallback omits it", async t => {
+test("failed download endpoints retain a deletion for persistence while fallbacks omit it", async t => {
+  t.mock.method(bag, "fetchBag", async () => ({
+    updateProductURL: "https://downloaddispatch.itunes.apple.com/up/updateProduct",
+  }));
   const state = fixture(t, [
-    { ...failed(), cookie: deletion, beforeResponse: concurrentCookie }, failed(),
+    { ...failed(), cookie: deletion, beforeResponse: concurrentCookie }, failed(), failed(),
   ]);
   await assert.rejects(download.getDownloadInfo(state.account, app), error => {
     assert.equal(error.code, "5002");
@@ -158,8 +163,9 @@ test("failed download endpoints retain a deletion for persistence while fallback
     downloader.persistAccount(state.account, error.updatedCookies);
     return true;
   });
-  assert.deepEqual(state.requests.map(value => value.url), [primaryURL, fallbackURL]);
+  assert.deepEqual(state.requests.map(value => value.url), [primaryURL, fallbackURL, updateURL]);
   assert.doesNotMatch(state.requests[1].cookie, /obsolete=/);
+  assert.doesNotMatch(state.requests[2].cookie, /obsolete=/);
   assertPersistedDeletion(state);
 });
 
