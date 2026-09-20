@@ -503,10 +503,91 @@ function resultValue(result) {
   return result;
 }
 
-function popSignerPage() {
+function removeSignerHost(hostId, pushedFallback) {
   try {
-    if ($ui && typeof $ui.pop === "function") $ui.pop();
+    if (hostId && typeof $ui !== "undefined" && $ui && typeof $ui.get === "function") {
+      const host = $ui.get(hostId);
+      if (host && typeof host.remove === "function") {
+        host.remove();
+        return;
+      }
+    }
+    if (pushedFallback && $ui && typeof $ui.pop === "function") $ui.pop();
   } catch (_e) {}
+}
+
+function signerHostView(hostId, webView) {
+  const toastColor = $color({ light: "#F8F8FA", dark: "#2C2C2E" });
+  const borderColor = $color({ light: "#D8D8DC", dark: "#48484A" });
+  return {
+    type: "view",
+    props: {
+      id: hostId,
+      bgcolor: $color("clear"),
+      userInteractionEnabled: false,
+    },
+    layout: $layout.fill,
+    views: [
+      {
+        type: "view",
+        props: {
+          bgcolor: $color("black"),
+          alpha: 0.08,
+          cornerRadius: 18,
+          smoothCorners: true,
+          userInteractionEnabled: false,
+        },
+        layout: (make, view) => {
+          make.centerX.equalTo(view.super);
+          make.centerY.equalTo(view.super).offset(3);
+          make.size.equalTo($size(178, 54));
+        },
+      },
+      {
+        type: "view",
+        props: {
+          bgcolor: toastColor,
+          alpha: 0.98,
+          cornerRadius: 18,
+          smoothCorners: true,
+          borderWidth: 0.5,
+          borderColor,
+          userInteractionEnabled: false,
+        },
+        layout: (make, view) => {
+          make.center.equalTo(view.super);
+          make.size.equalTo($size(178, 54));
+        },
+        views: [
+          {
+            type: "spinner",
+            props: { loading: true, style: 1 },
+            layout: (make, view) => {
+              make.left.inset(18);
+              make.centerY.equalTo(view.super);
+              make.size.equalTo($size(22, 22));
+            },
+          },
+          {
+            type: "label",
+            props: {
+              text: "SAP 签名中…",
+              font: $font("medium", 15),
+              textColor: $color("label"),
+              lines: 1,
+            },
+            layout: (make, view) => {
+              make.left.equalTo(52);
+              make.right.inset(16);
+              make.centerY.equalTo(view.super);
+              make.height.equalTo(22);
+            },
+          },
+        ],
+      },
+      webView,
+    ],
+  };
 }
 
 async function signInWebView(payload) {
@@ -552,125 +633,127 @@ async function signInWebView(payload) {
       timeout = setTimeout(
         () => {
           finish(new SapSignatureError("SAP 签名超时，请稍后重试"));
-          // 超时后调用方会隐藏登录遮罩；必须同时收起签名页，否则它仍
-          // 盖在登录页上，用户看到的就是一直停在“登录中”。
-          popSignerPage();
+          // 真正的遮罩关闭逻辑会在 host 挂载后重新绑定。
         },
         SIGN_TIMEOUT_SECONDS * 1000
       );
 
       try {
-        $ui.push({
+        const hostId = `${viewId}-host`;
+        let pushedFallback = false;
+        const dismiss = () => removeSignerHost(hostId, pushedFallback);
+        const webView = {
+          type: "web",
           props: {
-            title: "SAP 签名",
-            bgcolor: $color("systemBackground"),
-            theme: "auto",
+            id: viewId,
+            url: resources.url || SIGNER_PAGE,
+            opaque: false,
+            showsProgress: false,
+            scrollEnabled: false,
+            allowsNavigation: false,
+            alpha: 0.01,
+            userInteractionEnabled: false,
+          },
+          // 保持 WebView 真正挂载并运行，但缩到 1x1，不改变当前页面。
+          layout: (make, view) => {
+            make.right.bottom.inset(1);
+            make.size.equalTo($size(1, 1));
           },
           events: {
-            dealloc: () => {
+            sapReady: (first, second) => {
+              const message = second === undefined ? first : second;
+              const eventPayload = message && message.message ? message.message : message || {};
+              if (eventPayload.requestId && eventPayload.requestId !== viewId) return;
+            },
+            sapSigned: (first, second) => {
+              const message = second === undefined ? first : second;
+              const eventPayload = message && message.message ? message.message : message || {};
+              if (eventPayload.requestId && eventPayload.requestId !== viewId) return;
+              const value = String(eventPayload.signature || "");
+              if (!value) {
+                finish(new SapSignatureError("SAP 签名引擎返回空结果"));
+                dismiss();
+                return;
+              }
+              finish(null, value);
+              dismiss();
+            },
+            sapFailed: (first, second) => {
+              const message = second === undefined ? first : second;
+              const eventPayload = message && message.message ? message.message : message || {};
+              if (eventPayload.requestId && eventPayload.requestId !== viewId) return;
+              finish(new SapSignatureError(
+                "SAP 签名失败：" + errorMessage(eventPayload.error || "SAP 签名失败")
+              ));
+              dismiss();
+            },
+            didFinish: (sender) => {
+              if (finished || pageLoaded) return;
+              pageLoaded = true;
+              try {
+                const request = {
+                  requestId: viewId,
+                  ...(payload || {}),
+                  options,
+                };
+                if (typeof sender.notify === "function") {
+                  sender.notify({ event: "sapStart", message: request });
+                  return;
+                }
+                const startScript = `window.sapStart(${JSON.stringify(request)}); true;`;
+                const started = sender.exec(startScript);
+                if (started && typeof started.then === "function") {
+                  started.then(resultValue).catch((error) => {
+                    finish(new SapSignatureError(
+                      "SAP 签名失败：" + errorMessage(error), error
+                    ));
+                    dismiss();
+                  });
+                } else {
+                  resultValue(started);
+                }
+              } catch (error) {
+                finish(new SapSignatureError(
+                  "SAP 签名失败：" + errorMessage(error), error
+                ));
+                dismiss();
+              }
+            },
+            didFail: (_sender, _navigation, error) => {
+              finish(new SapSignatureError(
+                "加载 SAP 签名资源失败：" + errorMessage(error), error
+              ));
+              dismiss();
+            },
+            didClose: () => {
               if (!finished) finish(new SapSignatureError("SAP 签名页面已关闭"));
+              dismiss();
             },
           },
-          views: [
-            {
-              type: "web",
-              props: {
-                id: viewId,
-                url: resources.url || SIGNER_PAGE,
-                opaque: false,
-                showsProgress: true,
-                scrollEnabled: false,
-                allowsNavigation: false,
-              },
-              layout: $layout.fill,
-              events: {
-                sapReady: (first, second) => {
-                  const message = second === undefined ? first : second;
-                  const payload = message && message.message ? message.message : message || {};
-                  if (payload.requestId && payload.requestId !== viewId) return;
-                },
-                sapSigned: (first, second) => {
-                  const message = second === undefined ? first : second;
-                  const payload = message && message.message ? message.message : message || {};
-                  if (payload.requestId && payload.requestId !== viewId) return;
-                  const value = String(payload.signature || "");
-                  if (!value) {
-                    finish(new SapSignatureError("SAP 签名引擎返回空结果"));
-                    popSignerPage();
-                    return;
-                  }
-                  finish(null, value);
-                  popSignerPage();
-                },
-                sapFailed: (first, second) => {
-                  const message = second === undefined ? first : second;
-                  const payload = message && message.message ? message.message : message || {};
-                  if (payload.requestId && payload.requestId !== viewId) return;
-                  finish(
-                    new SapSignatureError(
-                      "SAP 签名失败：" + errorMessage(payload.error || "SAP 签名失败")
-                    )
-                  );
-                  popSignerPage();
-                },
-                didFinish: (sender) => {
-                  if (finished || pageLoaded) return;
-                  pageLoaded = true;
-                  try {
-                    const request = {
-                      requestId: viewId,
-                      ...(payload || {}),
-                      options,
-                    };
-                    if (typeof sender.notify === "function") {
-                      sender.notify({ event: "sapStart", message: request });
-                      return;
-                    }
-                    // 某些旧版 JSBox 没有 notify；exec 只能返回同步值，
-                    // 异步结果仍由页面通过 $notify 回传。
-                    const startScript = `window.sapStart(${JSON.stringify(request)}); true;`;
-                    const started = sender.exec(startScript);
-                    if (started && typeof started.then === "function") {
-                      started.then(resultValue).catch((error) => {
-                        finish(
-                          new SapSignatureError(
-                            "SAP 签名失败：" + errorMessage(error),
-                            error
-                          )
-                        );
-                        popSignerPage();
-                      });
-                    } else {
-                      resultValue(started);
-                    }
-                  } catch (error) {
-                    finish(
-                      new SapSignatureError(
-                        "SAP 签名失败：" + errorMessage(error),
-                        error
-                      )
-                    );
-                    popSignerPage();
-                  }
-                },
-                didFail: (_sender, _navigation, error) => {
-                  finish(
-                    new SapSignatureError(
-                      "加载 SAP 签名资源失败：" + errorMessage(error),
-                      error
-                    )
-                  );
-                  popSignerPage();
-                },
-                didClose: () => {
-                  if (!finished) finish(new SapSignatureError("SAP 签名页面已关闭"));
-                },
-              },
-            },
-          ],
-        });
+        };
+
+        const host = signerHostView(hostId, webView);
+        const windowView = $ui && $ui.window;
+        if (windowView && typeof windowView.add === "function") {
+          windowView.add(host);
+        } else {
+          // 极旧 JSBox 无 window.add 时保留兼容回退；正常版本不会走这里。
+          pushedFallback = true;
+          $ui.push({
+            props: { navBarHidden: true, bgcolor: $color("systemBackground") },
+            views: [host],
+          });
+        }
+
+        // timeout 创建在 host 之前，所以这里重新绑定真正的关闭逻辑。
+        const previousTimeout = timeout;
+        if (previousTimeout) clearTimeout(previousTimeout);
+        timeout = setTimeout(() => {
+          finish(new SapSignatureError("SAP 签名超时，请稍后重试"));
+          dismiss();
+        }, SIGN_TIMEOUT_SECONDS * 1000);
       } catch (error) {
-        finish(new SapSignatureError("无法打开 SAP 签名页面", error));
+        finish(new SapSignatureError("无法启动后台 SAP 签名", error));
       }
     });
     if (!signature) throw new SapSignatureError("SAP 签名结果为空");
