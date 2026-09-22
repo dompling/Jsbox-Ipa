@@ -132,3 +132,37 @@ test("download completion exposes the same OTA action and validation", t => {
   assert.deepEqual(h.shares, items.map(item => item.fileName));
   assert.equal(h.installations.length, 0);
 });
+
+// 缺 .sinf 的包装上去会在设备无授权缓存时启动崩溃。注入失败后原始包会
+// 静默回落到 OTA 安装，因此这里必须在放行前拦住，引导先修复授权。
+test("OTA is blocked until the SINF license is injected", t => {
+  const { installer } = setup(t, []);
+  const uninjected = record({
+    sinfInjected: false,
+    sinfs: [{ id: "1", sinf: "aGk=" }],
+  });
+  assert.equal(installer.needsLicenseInjection(uninjected), true);
+  assert.match(installer.unavailableReason(uninjected), /尚未注入授权/);
+
+  // 已注入的包不受影响。
+  const injected = record({ sinfInjected: true, sinfs: [{ id: "1", sinf: "aGk=" }] });
+  assert.equal(installer.needsLicenseInjection(injected), false);
+  assert.equal(installer.unavailableReason(injected), "");
+
+  // sidecar 里没有授权数据的旧记录不能因此被永久挡住。
+  const noLicense = record({ sinfInjected: false, sinfs: [] });
+  assert.equal(installer.needsLicenseInjection(noLicense), false);
+  assert.equal(installer.unavailableReason(noLicense), "");
+});
+
+test("OTA prompt offers repair instead of installing an uninjected IPA", async t => {
+  const { installer, alerts } = setup(t, []);
+  const uninjected = record({
+    sinfInjected: false,
+    sinfs: [{ id: "1", sinf: "aGk=" }],
+  });
+  installer.prompt(uninjected);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0].message, /尚未注入授权/);
+  assert.ok(alerts[0].actions.some(action => action.title === "分享 IPA"));
+});

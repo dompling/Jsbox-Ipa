@@ -6,11 +6,23 @@ const library = require("../store/library");
 const ota = require("../services/ota");
 const otaMetadata = require("../lib/ota-manifest");
 
+// sidecar 里有授权数据、却没写回 IPA 的包装上去会闪退：设备没有该 Apple ID
+// 授权缓存时，缺 .sinf 的 Mach-O 解密失败，启动即崩溃。必须先“修复授权”。
+function needsLicenseInjection(record) {
+  return (
+    !!record &&
+    record.sinfInjected !== true &&
+    Array.isArray(record.sinfs) &&
+    record.sinfs.length > 0
+  );
+}
+
 function unavailableReason(record) {
   if (!record || !record.fileName) return "找不到 IPA 文件记录";
   if (record.recovered) return "这个 IPA 缺少可信元数据，只能先分享或重新下载";
   if (!record.packageVerified) return "这个 IPA 尚未通过 Payload/Info.plist 结构校验，请重新下载";
   if (record.metadataVerified !== true) return "这个 IPA 的身份和构建版本尚未验证，请重新验证或重新下载";
+  if (needsLicenseInjection(record)) return "这个 IPA 尚未注入授权（SINF），安装后打开可能闪退。请先在“归档”中点按“修复授权（重新注入 SINF）”";
   if (!record.bundleId) return "缺少 Bundle ID，不能生成安装清单";
   if (!record.bundleVersion) return "缺少真实 CFBundleVersion，不能生成安装清单";
   try {
@@ -118,4 +130,5 @@ module.exports = {
   share,
   downloadComplete,
   unavailableReason,
+  needsLicenseInjection,
 };

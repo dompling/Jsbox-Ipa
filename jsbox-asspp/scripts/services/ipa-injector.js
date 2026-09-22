@@ -39,20 +39,33 @@ function sinfTargetFromSupp(suppName) {
 
 // Manifest.plist 的 SinfPaths 通常就是 `SC_Info/<executable>.sinf` 形式；
 // 也可能只给文件名。统一收敛成 app 目录下的相对路径，拒绝任何越界输入。
+//
+// app 内每个受 FairPlay 保护的 Mach-O 都有自己的 SC_Info：主可执行文件在 app
+// 根目录，Frameworks / PlugIns 下的动态库和扩展在各自的 bundle 里，因此
+// SinfPaths 会出现 `Frameworks/ReelSteady.framework/SC_Info/ReelSteady.sinf`
+// 这样的嵌套路径。这里放行任意深度的 `…/SC_Info/<name>.sinf`，仍然拒绝绝对
+// 路径、`..` 穿越、控制字符和过深路径。
+const MAX_SINF_PATH_DEPTH = 8;
+
+function isSafeSinfSegment(segment) {
+  if (!segment || segment === "." || segment === "..") return false;
+  if (segment.includes("/") || segment.includes("\\")) return false;
+  return !/[\0-\x1f\x7f]/.test(segment);
+}
+
 function normalizeSinfRelPath(value) {
   let path = String(value || "").replace(/\\/g, "/").trim();
   if (!path || path.startsWith("/") || path.includes("\0")) return "";
   if (!/\.sinf$/i.test(path)) return "";
   const segments = path.split("/");
-  if (
-    segments.some(
-      (segment) => !segment || segment === "." || segment === ".."
-    )
-  ) {
-    return "";
-  }
+  if (segments.length > MAX_SINF_PATH_DEPTH) return "";
+  if (!segments.every(isSafeSinfSegment)) return "";
   if (path.startsWith("SC_Info/")) return path;
   if (segments.length === 1) return `SC_Info/${path}`;
+  // 嵌套路径必须以 `SC_Info/<file>.sinf` 结尾，中间只允许普通目录名。
+  if (segments.length >= 3 && segments[segments.length - 2] === "SC_Info") {
+    return path;
+  }
   return "";
 }
 
@@ -181,11 +194,25 @@ function decodeMetadataText(base64Value) {
   }
 }
 
+// 嵌套 target（如 Frameworks/X.framework/SC_Info/X.sinf）的父目录在解压后
+// 可能不存在，写入前逐级建出来，否则 $file.write 会失败。
+function ensureParentDirs(path) {
+  const segments = String(path).split("/");
+  segments.pop();
+  let current = "";
+  for (const segment of segments) {
+    current = current ? `${current}/${segment}` : segment;
+    if (!$file.exists(current)) validator.ensureDir(current);
+  }
+}
+
 function writePlannedTargets(appDir, plan) {
   const scDir = `${appDir}/SC_Info`;
   if (!$file.exists(scDir)) validator.ensureDir(scDir);
   for (const target of plan.targets) {
-    writeBytesFile(`${appDir}/${target.relPath}`, target.sinf);
+    const path = `${appDir}/${target.relPath}`;
+    ensureParentDirs(path);
+    writeBytesFile(path, target.sinf);
   }
   return plan.targets.length;
 }

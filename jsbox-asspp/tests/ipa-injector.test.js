@@ -262,3 +262,106 @@ test("full injection flow writes SINF and iTunesMetadata then saves a new IPA", 
   assert.ok(packedMap.has("iTunesMetadata.plist"));
   assert.ok(asText(packedMap.get("iTunesMetadata.plist")).indexOf("<plist") >= 0);
 });
+
+// SC_Info 是每个受 FairPlay 保护的 Mach-O 一份：主可执行文件在 app 根目录，
+// Frameworks / PlugIns 下的二进制在各自 bundle 里，Manifest.plist 的 SinfPaths
+// 因此包含嵌套路径。旧实现只放行单层的 `SC_Info/<name>.sinf`，嵌套条目会被
+// 静默丢弃，导致多二进制 app 只注入了主可执行文件。
+test("nested SC_Info paths from Manifest.plist are accepted, traversal is still rejected", () => {
+  const nested = "Frameworks/ReelSteady.framework/SC_Info/ReelSteady.sinf";
+  assert.strictEqual(injector.normalizeSinfRelPath(nested), nested);
+  assert.strictEqual(
+    injector.normalizeSinfRelPath("PlugIns/Ext.appex/SC_Info/Ext.sinf"),
+    "PlugIns/Ext.appex/SC_Info/Ext.sinf"
+  );
+  assert.strictEqual(
+    injector.normalizeSinfRelPath("Watch/Watch.app/SC_Info/Watch.sinf"),
+    "Watch/Watch.app/SC_Info/Watch.sinf"
+  );
+  // 中间段不是 SC_Info 的一律拒绝，避免写到 app 内的任意位置。
+  assert.strictEqual(injector.normalizeSinfRelPath("Frameworks/A.framework/B.sinf"), "");
+  assert.strictEqual(injector.normalizeSinfRelPath("a/b/Demo.sinf"), "");
+  // 越界路径仍然拒绝。
+  assert.strictEqual(injector.normalizeSinfRelPath("../x/SC_Info/a.sinf"), "");
+  assert.strictEqual(injector.normalizeSinfRelPath("a/../SC_Info/a.sinf"), "");
+  assert.strictEqual(injector.normalizeSinfRelPath("/a/SC_Info/a.sinf"), "");
+  assert.strictEqual(injector.normalizeSinfRelPath("SC_Info/../SC_Info/a.sinf"), "");
+  // 控制字符拒绝，纯空白 trim 后仍可用。
+  assert.strictEqual(injector.normalizeSinfRelPath("SC_Info/a\u0000b.sinf"), "");
+  assert.strictEqual(injector.normalizeSinfRelPath("  SC_Info/a.sinf  "), "SC_Info/a.sinf");
+  const deep = `${new Array(10).fill("d").join("/")}/SC_Info/a.sinf`;
+  assert.strictEqual(injector.normalizeSinfRelPath(deep), "");
+});
+
+test("injection writes every SINF from a multi-binary Manifest.plist", async () => {
+  const manifestXml = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0"><dict>',
+    "<key>SinfPaths</key><array>",
+    "<string>SC_Info/Demo.sinf</string>",
+    "<string>Frameworks/ReelSteady.framework/SC_Info/ReelSteady.sinf</string>",
+    "<string>PlugIns/Ext.appex/SC_Info/Ext.sinf</string>",
+    "</array></dict></plist>",
+  ].join("");
+  const sinfA = b64.base64Encode([0x01, 0x02]);
+  const sinfB = b64.base64Encode([0x03, 0x04]);
+  const sinfC = b64.base64Encode([0x05, 0x06]);
+
+  installFs();
+  const original = {
+    fileName: "Demo_1.0.ipa",
+    appId: "123",
+    bundleId: "com.example.demo",
+    title: "Demo",
+    version: "1.0",
+    shortVersion: "1.0",
+    bundleVersion: "100",
+    size: 1024,
+    createdAt: new Date().toISOString(),
+    packageVerified: true,
+    packageAppPath: "Payload/Demo.app",
+    sinfs: [
+      { id: "1", sinf: sinfA },
+      { id: "2", sinf: sinfB },
+      { id: "3", sinf: sinfC },
+    ],
+    accountEmail: "original@example.invalid",
+  };
+  files.set("downloads/Demo_1.0.ipa", {
+    bytes: [0x50, 0x4b, 0x03, 0x04],
+    zipEntries: {
+      "Payload/Demo.app/Info.plist": {
+        string:
+          '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.demo</string></dict></plist>',
+      },
+      "Payload/Demo.app/SC_Info/Manifest.plist": { string: manifestXml },
+      "Payload/Demo.app/Demo": { bytes: [0xca, 0xfe, 0xba, 0xbe] },
+    },
+  });
+  files.set("downloads/Demo_1.0.ipa.meta.json", { string: JSON.stringify(original) });
+
+  const injectorLib = loadInjector();
+  const result = await injectorLib.injectAndSave(original);
+
+  // 三个条目全部写入，不再只有主可执行文件一个。
+  assert.strictEqual(result.sinfWrites, 3);
+  assert.strictEqual(result.source, "Manifest.plist");
+
+  const packed = zipCalls[0];
+  const packedMap = new Map(packed.entries.map(rel => [rel, packed.contents[rel]]));
+  const expected = [
+    ["Payload/Demo.app/SC_Info/Demo.sinf", [0x01, 0x02]],
+    ["Payload/Demo.app/Frameworks/ReelSteady.framework/SC_Info/ReelSteady.sinf", [0x03, 0x04]],
+    ["Payload/Demo.app/PlugIns/Ext.appex/SC_Info/Ext.sinf", [0x05, 0x06]],
+  ];
+  for (const [rel, bytes] of expected) {
+    assert.ok(packedMap.has(rel), `missing ${rel}`);
+    const written = packedMap.get(rel);
+    assert.deepStrictEqual(
+      b64.base64Decode(b64.base64Encode(written.byteArray || written.bytes)),
+      bytes,
+      `wrong bytes for ${rel}`
+    );
+  }
+});

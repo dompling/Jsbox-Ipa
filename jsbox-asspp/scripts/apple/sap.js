@@ -516,78 +516,11 @@ function removeSignerHost(hostId, pushedFallback) {
   } catch (_e) {}
 }
 
-function signerHostView(hostId, webView) {
-  const toastColor = $color({ light: "#F8F8FA", dark: "#2C2C2E" });
-  const borderColor = $color({ light: "#D8D8DC", dark: "#48484A" });
-  return {
-    type: "view",
-    props: {
-      id: hostId,
-      bgcolor: $color("clear"),
-      userInteractionEnabled: false,
-    },
-    layout: $layout.fill,
-    views: [
-      {
-        type: "view",
-        props: {
-          bgcolor: $color("black"),
-          alpha: 0.08,
-          cornerRadius: 18,
-          smoothCorners: true,
-          userInteractionEnabled: false,
-        },
-        layout: (make, view) => {
-          make.centerX.equalTo(view.super);
-          make.centerY.equalTo(view.super).offset(3);
-          make.size.equalTo($size(178, 54));
-        },
-      },
-      {
-        type: "view",
-        props: {
-          bgcolor: toastColor,
-          alpha: 0.98,
-          cornerRadius: 18,
-          smoothCorners: true,
-          borderWidth: 0.5,
-          borderColor,
-          userInteractionEnabled: false,
-        },
-        layout: (make, view) => {
-          make.center.equalTo(view.super);
-          make.size.equalTo($size(178, 54));
-        },
-        views: [
-          {
-            type: "spinner",
-            props: { loading: true, style: 1 },
-            layout: (make, view) => {
-              make.left.inset(18);
-              make.centerY.equalTo(view.super);
-              make.size.equalTo($size(22, 22));
-            },
-          },
-          {
-            type: "label",
-            props: {
-              text: "SAP 签名中…",
-              font: $font("medium", 15),
-              textColor: $color("label"),
-              lines: 1,
-            },
-            layout: (make, view) => {
-              make.left.equalTo(52);
-              make.right.inset(16);
-              make.centerY.equalTo(view.super);
-              make.height.equalTo(22);
-            },
-          },
-        ],
-      },
-      webView,
-    ],
-  };
+// SAP 签名在后台进行：只挂一个 1x1 的 WebView 承载签名引擎，不再显示
+// 「SAP 签名中…」浮层。登录和已购列表本身已有加载态，额外的全屏遮罩会
+// 打断操作且无法取消。
+function signerHostView(webView) {
+  return webView;
 }
 
 async function signInWebView(payload) {
@@ -639,9 +572,9 @@ async function signInWebView(payload) {
       );
 
       try {
-        const hostId = `${viewId}-host`;
         let pushedFallback = false;
-        const dismiss = () => removeSignerHost(hostId, pushedFallback);
+        // 宿主视图就是 WebView 本身（无浮层），因此按它的 id 移除。
+        const dismiss = () => removeSignerHost(viewId, pushedFallback);
         const webView = {
           type: "web",
           props: {
@@ -732,7 +665,7 @@ async function signInWebView(payload) {
           },
         };
 
-        const host = signerHostView(hostId, webView);
+        const host = signerHostView(webView);
         const windowView = $ui && $ui.window;
         if (windowView && typeof windowView.add === "function") {
           windowView.add(host);
